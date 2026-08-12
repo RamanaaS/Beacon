@@ -387,9 +387,88 @@ Passed!  - Failed:     0, Passed:     5, ... - Beacon.IntegrationTests.dll (net9
 
 ---
 
-## Next: Phase 3 — Real-Time Telemetry (raw WebSockets, Device Simulator, Redis dedup)
+## Phase 3 — Alert Ingestion + Redis Dedup (partial — blocked on infra, not on code)
+
+**Status: code complete and unit-tested; live end-to-end verification blocked pending a system
+restart.** This phase turned out to need Docker (for Redis), and this machine had neither Docker
+nor WSL installed. Rather than fake a "verified" result, here's the honest state: what's done,
+what's proven, and what's still an open item.
+
+Also: this phase's scope shrank on purpose from what Phase 2 originally planned ("Real-Time
+Telemetry — raw WebSockets, Device Simulator, Redis dedup"). Bundling alert ingestion + Redis
+dedup with WebSocket telemetry streaming + a whole Device Simulator was overloading one phase with
+two genuinely separate concerns — alerts becoming incidents vs. continuous metrics streaming to a
+dashboard. Split: this phase is alert ingestion + Redis dedup only; WebSocket telemetry + the
+Device Simulator move to the next phase. Re-scoping a phase when its real shape becomes clearer is
+normal — the plan in ARCHITECTURE.md was a starting estimate, not a contract.
+
+### What got built
+
+- `IRecentAlertsStore` (Application) — the seam `AlertDeduplicator` (Phase 1's pure domain
+  service) needed to work against something real instead of a hand-built list in a unit test.
+- `IngestAlertHandler` (Application) — ties together `IRecentAlertsStore`, `IIncidentRepository`,
+  `IClock`, and `Incident.Declare`, all from earlier phases. Nothing new domain-wise; pure
+  orchestration, which is exactly what Application is for.
+- `RedisRecentAlertsStore` (Infrastructure) — real `StackExchange.Redis` implementation: one
+  sorted set per fingerprint, score = timestamp, `ZRANGEBYSCORE` for "recent," pruned on write so
+  it doesn't grow unbounded.
+- `POST /api/alerts/ingest` (Api) — a thin endpoint over `IngestAlertHandler`.
+- 4 new unit tests in `Beacon.UnitTests/Alerts/` using hand-written in-memory fakes for
+  `IRecentAlertsStore` and `IIncidentRepository` — these prove the *orchestration logic* (dedup
+  decision → declare-or-skip) is correct, independent of whether Redis is actually reachable.
+
+### Why Redis needed a real decision, not just code
+
+Redis isn't installable directly on Windows in any officially supported way — it needs either
+Docker or WSL, and this machine had neither. Rather than silently pick a fallback, this got a real
+choice put to the user: install Docker now (bigger interruption, but it's already a named gap in
+the job-search roadmap and every later phase needs it anyway — RabbitMQ, the full docker-compose
+stack, eventually Kubernetes), use an in-memory stand-in permanently, or reorder phases to avoid
+the dependency for now. Docker Desktop install now was chosen. `winget install Docker.DockerDesktop`
+ran successfully, but it needs WSL2 as its backend, which needs a Windows feature enabled that
+requires a **restart** to take effect — not something to trigger without asking, since it closes
+every open application. That restart is still pending as of this write-up.
+
+### The resilience decision, and why it's not a workaround
+
+`ConnectionMultiplexer.Connect(...)` normally **throws immediately** if it can't reach Redis at
+startup — which would have meant the entire API, including every already-working incident
+endpoint, refuses to start just because a not-yet-provisioned dependency isn't up. That's a real,
+common production failure mode worth knowing by name: one optional dependency taking down
+everything else because nobody thought about *degraded* startup. Fix: `abortConnect=false` on the
+Redis connection string lets the multiplexer construct successfully and retry in the background;
+only code paths that actually *use* it (right now, only `/api/alerts/ingest`) fail until a
+connection exists. This was verified for real, not assumed: with Redis genuinely unreachable,
+`POST /api/incidents` (Phase 2, unrelated to Redis) still returned `201 Created` against real SQL
+Server, while `POST /api/alerts/ingest` returned `500`. One feature degrades; nothing else does.
+The full existing test suite (18 unit + 5 integration) also stayed green with Redis down, for the
+same reason — nothing in those tests touches the alert-ingestion path.
+
+### Open item — do this once the restart happens
+
+1. Restart Windows so the WSL2 feature Docker's installer enabled actually activates.
+2. Open Docker Desktop once (first-run setup, no sign-in required for local use).
+3. `docker run -d --name beacon-redis -p 6379:6379 redis:7`
+4. Re-run `POST /api/alerts/ingest` — it should now return `200` with a real `New`/`Duplicate`
+   decision instead of `500`.
+5. At that point this phase's live-Redis integration test (mirroring `IncidentEndpointsTests`'s
+   pattern against real LocalDB) can actually get written and verified, instead of asserted from
+   unit tests with fakes alone.
+
+### Interview questions this phase prepares you for
+
+- Why does one dependency being down (Redis) not take down the whole API here? What's the actual
+  mechanism (`abortConnect`), and what's the failure mode it prevents?
+- What's the argument for testing `IngestAlertHandler`'s orchestration logic with hand-written
+  in-memory fakes instead of either (a) mocks from a library or (b) always running it against a
+  real Redis/SQL Server?
+- Why is alert ingestion split from WebSocket telemetry into two separate phases instead of one?
+
+---
+
+## Next: Phase 4 — Real-Time Telemetry (Device Simulator, raw WebSockets) + closing out Phase 3's live verification
 
 Not started. Will cover: standing up the Device Simulator, streaming synthetic telemetry over a
 raw `System.Net.WebSockets` handler (the direct continuation of the GRL production experience —
-see ARCHITECTURE.md Table A), and wiring `AlertDeduplicator` from Phase 1 to a real Redis-backed
-recent-alerts window instead of the in-memory list the unit tests pass it today.
+see ARCHITECTURE.md Table A) — plus, once Redis is reachable, the live-Redis integration test and
+manual verification that Phase 3 left open.
