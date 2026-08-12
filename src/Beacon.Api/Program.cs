@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Beacon.Api.Alerts;
 using Beacon.Api.Common;
 using Beacon.Api.Incidents;
 using Beacon.Application;
@@ -42,6 +43,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.MapIncidentEndpoints();
+app.MapAlertEndpoints();
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }))
    .WithName("HealthCheck")

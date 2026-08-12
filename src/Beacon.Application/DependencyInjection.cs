@@ -1,3 +1,4 @@
+using Beacon.Application.Alerts;
 using Beacon.Application.Incidents;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -11,6 +12,7 @@ public static class DependencyInjection
         services.AddScoped<AcknowledgeIncidentHandler>();
         services.AddScoped<ResolveIncidentHandler>();
         services.AddScoped<GetIncidentHandler>();
+        services.AddScoped<IngestAlertHandler>();
 
         return services;
     }

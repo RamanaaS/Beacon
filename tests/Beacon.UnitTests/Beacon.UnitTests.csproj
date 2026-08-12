@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Beacon.Domain\Beacon.Domain.csproj" />
+    <ProjectReference Include="..\..\src\Beacon.Application\Beacon.Application.csproj" />
   </ItemGroup>
 
 </Project>
