@@ -1,0 +1,30 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.userosscache
+*.sln.docstates
+
+## Test results
+[Tt]est[Rr]esult*/
+*.trx
+*.coverage
+
+## Rider / VS Code
+.idea/
+*.swp
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Frontend (future phases)
+node_modules/
+dist/
+build/
+
+## Secrets / local env
+*.env
+appsettings.*.local.json
