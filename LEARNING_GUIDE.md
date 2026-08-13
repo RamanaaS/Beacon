@@ -466,9 +466,126 @@ same reason — nothing in those tests touches the alert-ingestion path.
 
 ---
 
-## Next: Phase 4 — Real-Time Telemetry (Device Simulator, raw WebSockets) + closing out Phase 3's live verification
+## Phase 4 — Real-Time Telemetry (raw WebSockets)
 
-Not started. Will cover: standing up the Device Simulator, streaming synthetic telemetry over a
-raw `System.Net.WebSockets` handler (the direct continuation of the GRL production experience —
-see ARCHITECTURE.md Table A) — plus, once Redis is reachable, the live-Redis integration test and
-manual verification that Phase 3 left open.
+**Status: done.** 24/24 tests passing (18 unit + 6 integration), including 3 back-to-back clean
+runs of the integration suite to rule out flakiness in the WebSocket-specific fix below.
+
+Note on naming: earlier phases referred to this as needing a "Device Simulator." That term was
+left over from the project's first draft (ChargeMesh, the charging-fleet domain this project moved
+away from before Phase 0). Beacon doesn't have physical devices — it has *monitored services*, so
+what got built is a metrics simulator, generating plausible CPU/latency/error-rate samples for a
+small set of services, not a device simulator.
+
+### Before coding
+
+**Why this runs in-process instead of as a separate simulator process.** The original phase plan
+implied a standalone simulator talking to the API over some protocol. Building that would mean
+inventing a transport (HTTP? gRPC? a queue?) for a component that only exists to generate fake
+data — real complexity serving no real requirement yet. `MetricsSimulatorService` is a
+`BackgroundService` living inside `Beacon.Api` itself instead: same demonstrated skill (broadcasting
+live samples over a raw WebSocket), zero invented infrastructure. If a second consumer of synthetic
+metrics ever shows up — a load test running independently of the API process — that's the concrete
+reason to split it out; not before.
+
+**Why raw `System.Net.WebSockets`, not SignalR, for this one.** Table C of ARCHITECTURE.md
+already commits to demonstrating both, deliberately, for direct comparison. This is the raw-socket
+side — it's the same mechanism used for GRL's production telemetry streaming. `Beacon.Admin`
+(Blazor, a later phase) is where SignalR shows up instead, for its live alerts.
+
+**The concurrency rule that broke the first version of this code, and why.** `System.Net.WebSockets.WebSocket`
+supports exactly **one concurrent send and one concurrent receive** — not one send, full stop, but
+specifically *one at a time*. Two independent code paths writing to the same socket at once
+(here: the broadcast timer, and a close handshake) corrupts the connection. This is a real,
+easy-to-miss constraint of the raw WebSocket API — the exact kind of thing a higher-level
+abstraction like SignalR normally hides from you, and exactly why it's worth having hit it directly
+once.
+
+### During coding — what got built, and a bug caught by isolating a failure, not just by re-running
+
+| File | What it is |
+|---|---|
+| [`src/Beacon.Api/Telemetry/WebSocketConnectionManager.cs`](src/Beacon.Api/Telemetry/WebSocketConnectionManager.cs) | Tracks connections, serializes all writes to each socket through a per-connection lock |
+| [`src/Beacon.Api/Telemetry/MetricSample.cs`](src/Beacon.Api/Telemetry/MetricSample.cs) | The broadcast payload shape |
+| [`src/Beacon.Api/Telemetry/MetricsSimulatorService.cs`](src/Beacon.Api/Telemetry/MetricsSimulatorService.cs) | `BackgroundService`, ticks every 2s, broadcasts only if someone's listening |
+| [`src/Beacon.Api/Telemetry/TelemetryEndpoints.cs`](src/Beacon.Api/Telemetry/TelemetryEndpoints.cs) | `/ws/telemetry` — accept, receive-loop, correct close handling |
+| [`tests/Beacon.IntegrationTests/TelemetryWebSocketTests.cs`](tests/Beacon.IntegrationTests/TelemetryWebSocketTests.cs) | Connects via `TestServer`'s real in-process WebSocket client |
+| [`tests/Beacon.IntegrationTests/IntegrationTestCollection.cs`](tests/Beacon.IntegrationTests/IntegrationTestCollection.cs) | Fixes a real test-isolation bug — see below |
+
+**Bug #1 — two test classes racing to reset the same database.** Adding `TelemetryWebSocketTests`
+alongside the existing `IncidentEndpointsTests` immediately broke *both*, with SQL errors like
+`Cannot drop the database... because it does not exist`. Cause: `IClassFixture<BeaconApiFactory>`
+gives each test *class* its own factory instance, and xUnit runs different classes in parallel by
+default — so two factories both called `EnsureDeletedAsync()` + `MigrateAsync()` against the same
+physical `BeaconDb_IntegrationTests` database at the same time. One class's drop landed while the
+other's migrate/tests were still using it. This had been invisible with only one integration test
+class in the project — it's exactly the kind of bug that only shows up the moment a second
+consumer of a shared pattern gets added, which is worth remembering generally. Fix:
+`IntegrationTestCollection` (`[CollectionDefinition]` + `ICollectionFixture<BeaconApiFactory>`),
+with every integration test class opting into `[Collection(IntegrationTestCollection.Name)]`
+instead of its own `IClassFixture`. One shared factory, one reset, classes in that collection run
+sequentially against each other by xUnit's own rules.
+
+**Bug #2 — `CloseAsync` after already receiving a Close frame, and no send serialization.** After
+fixing the database race, the WebSocket test *specifically* kept failing on its own, with
+`ObjectDisposedException` deep inside the close handshake — a different failure from bug #1,
+confirming it needed its own diagnosis rather than being the same thing. Two real problems, found
+by reading the actual .NET WebSocket API contract rather than guessing:
+1. The server's `finally` block called `socket.CloseAsync(...)` unconditionally — but if the loop
+   had already received a `Close` message from the client, the peer's close frame had *already*
+   arrived. Calling `CloseAsync` (which sends a close frame *and waits for the peer's reply*) at
+   that point tries to start a second handshake and waits for a reply that will never come. The
+   correct call once you've already received the peer's close is `CloseOutputAsync` — acknowledge
+   only, don't re-initiate.
+2. Nothing prevented `MetricsSimulatorService`'s broadcast (a send, on a timer) from firing at the
+   same moment a client's close handshake was in flight (also effectively a send) on the same
+   socket — violating the one-concurrent-send rule above. Fixed by giving every tracked connection
+   its own `SemaphoreSlim`, so a broadcast and a close-acknowledgment for the same socket can never
+   overlap, no matter how their timing lines up.
+
+Both bugs were caught by isolating a *specific, reliably reproducing* failure and reading its
+actual stack trace and API docs, not by trial-and-error re-running until something happened to
+pass — worth internalizing as the general debugging move, not just the fix for these two.
+
+### How to run it
+
+```
+dotnet test                          # 18 unit + 6 integration, all green
+
+# Or manually: run the API, then in a browser console or a WebSocket client:
+#   new WebSocket("ws://localhost:<port>/ws/telemetry")
+# and watch JSON samples arrive every ~2 seconds once connected.
+```
+
+### Common mistakes (and why this phase's code avoids them)
+
+1. **Assuming `WebSocket.SendAsync` is safe to call from multiple places at once.** It isn't — see
+   above. Any design that lets more than one code path independently reach the same `WebSocket`
+   instance needs a serialization point, full stop.
+2. **Calling `CloseAsync` reflexively in a `finally` block.** The right close call depends on
+   *which side initiated the close and whether a close frame was already received* — not always
+   the same method.
+3. **Giving every test class its own infrastructure fixture "for isolation."** It looks safer, but
+   for *shared, named, stateful infrastructure* (a database with a fixed name, in this case) it's
+   the opposite — one shared, sequenced fixture is what actually gives you isolation.
+
+### Interview questions this phase prepares you for
+
+- What's the actual concurrency contract of `System.Net.WebSockets.WebSocket`, and what breaks if
+  you violate it?
+- Why is `CloseOutputAsync` sometimes correct instead of `CloseAsync`? Walk through both sides of
+  a WebSocket close handshake.
+- `IClassFixture<T>` vs. `ICollectionFixture<T>` in xUnit — what's the actual difference in
+  instance lifetime and parallelism, and when does it matter?
+- Why does `MetricsSimulatorService` skip generating samples when `ConnectionCount == 0`? What's
+  the cost being avoided?
+
+---
+
+## Next: Phase 5 — Incident Orchestration (CQRS/MediatR, scoped)
+
+Not started. This is where `Beacon.IncidentEngine` and MediatR actually show up — see
+ARCHITECTURE.md Section 9 for why CQRS is deliberately scoped to this one module and nowhere else.
+Also still open: once Docker's daemon is actually running and Redis is reachable, go back and
+write the live-Redis integration test Phase 3 left as an explicit open item, and push this repo's
+history to GitHub once the account/authentication issue on that end is sorted out.
