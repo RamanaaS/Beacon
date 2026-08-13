@@ -582,10 +582,126 @@ dotnet test                          # 18 unit + 6 integration, all green
 
 ---
 
-## Next: Phase 5 — Incident Orchestration (CQRS/MediatR, scoped)
+## Phase 5 — Incident Orchestration (CQRS/MediatR, scoped)
 
-Not started. This is where `Beacon.IncidentEngine` and MediatR actually show up — see
-ARCHITECTURE.md Section 9 for why CQRS is deliberately scoped to this one module and nowhere else.
-Also still open: once Docker's daemon is actually running and Redis is reachable, go back and
-write the live-Redis integration test Phase 3 left as an explicit open item, and push this repo's
-history to GitHub once the account/authentication issue on that end is sorted out.
+**Status: done.** 35/35 tests passing (28 unit + 7 integration), plus a real live end-to-end check
+of the new background service (below) — not just automated tests this time, because a timer-driven
+`BackgroundService` is exactly the kind of "wiring" code this project's bugs have kept coming from,
+not domain logic.
+
+Naming note: ARCHITECTURE.md called this module `Beacon.IncidentEngine`, a separate project.
+Nothing here got split into a new project — the commands/handlers live in `Beacon.Application`,
+where the incident use cases already were. A physical project split is warranted by an independent
+deployment or scaling need, and nothing currently has one; see ARCHITECTURE.md Section 9's own
+reasoning about not adding structure speculatively, now applied to itself.
+
+### Before coding
+
+**What CQRS/MediatR actually buys here, concretely — not just "the architecture doc said to."**
+Before this phase, `EscalationCheckerService` (a background timer, not an HTTP request) would have
+needed to either duplicate `EscalateIncidentCommandHandler`'s logic, or reach into
+`IIncidentRepository` and `Incident.Escalate` directly, coupling a worker to the same internals the
+API uses. With MediatR, both the API endpoint and the background checker do the exact same thing:
+`sender.Send(new EscalateIncidentCommand(...))`. One command, one handler, two callers that don't
+know about each other. That's the actual justification — not "CQRS is a best practice."
+
+**Why MediatR is pinned to 12.5.0, not the latest version.** Same situation as FluentAssertions in
+Phase 1: MediatR's maintainer moved it to a commercial license starting with v13. 12.5.0 is the
+last MIT-licensed release. Worth knowing this landscape is shifting — AutoMapper went the same way
+— rather than pulling in whatever `dotnet add package` resolves to by default and finding out later.
+
+**Filling in a gap from Phase 1.** ARCHITECTURE.md's own layering diagram named `IncidentEscalated`
+as one of the domain events from the start — Phase 1 never actually implemented it (only
+`IncidentDeclared` through `IncidentResolved` exist there). This phase adds it properly:
+`Incident.Escalate()` (same `EnsureNotResolved` guard as every other mutator) and `EscalationPolicy`,
+a pure domain service shaped exactly like `AlertDeduplicator` from Phase 1 — no I/O, just "given
+this incident's severity, status, and age, is escalation due right now."
+
+### During coding — three real bugs, one from each layer
+
+| File | What it is |
+|---|---|
+| [`src/Beacon.Domain/Incidents/EscalationPolicy.cs`](src/Beacon.Domain/Incidents/EscalationPolicy.cs) | Pure function: Sev1 due at 5 min, Sev2 at 15 min, Sev3/4 never auto-escalate |
+| [`src/Beacon.Application/Incidents/EscalateIncident.cs`](src/Beacon.Application/Incidents/EscalateIncident.cs) | New command — issued identically by the API and the checker |
+| [`src/Beacon.Api/Incidents/EscalationCheckerService.cs`](src/Beacon.Api/Incidents/EscalationCheckerService.cs) | `BackgroundService`, 30s timer, fresh DI scope per tick |
+| All of `Beacon.Application/Incidents/*.cs`, `Alerts/IngestAlert.cs` | Refactored from plain `HandleAsync` classes to `IRequest`/`IRequestHandler` |
+
+1. **A genuine EF Core TPH gotcha — forgetting to register a new derived type.** Adding
+   `IncidentEscalated` to `Incident.cs` and writing it via `EscalateIncidentCommandHandler` compiled
+   and ran fine... until the very next `GET` on that incident threw `InvalidOperationException:
+   Unable to materialize entity instance of type 'IncidentEvent'. No discriminators matched the
+   discriminator value 'IncidentEvent'`. The domain model and the command handler were correct —
+   `BeaconDbContext`'s `HasDiscriminator<string>("EventType")` chain simply never got
+   `.HasValue<IncidentEscalated>("Escalated")` added to it. EF let the *write* succeed (silently
+   falling back to the base type's name as the discriminator value instead of erroring), and the
+   failure only surfaced on *read*, one layer and one HTTP request away from the actual mistake.
+   The general lesson: when TPH is in play, adding a derived type to the C# hierarchy and adding it
+   to the EF discriminator mapping are two separate steps, and only one of them is enforced by the
+   compiler.
+2. **A real xUnit test-isolation bug, in the tests I had to fix to even see bug #1.** Not new this
+   phase, but worth restating: the `IntegrationTestCollection` fix from Phase 4 is exactly what let
+   this new failure surface as *one specific, deterministic, reproducible test failure* instead of
+   as flaky noise across three test classes.
+3. **`Task<TResponse> Handle(...)` takes a non-optional `CancellationToken`.** Converting
+   `IngestAlertHandlerTests` to call the new `IngestAlertCommandHandler.Handle(...)` directly (MediatR
+   handlers are still plain classes — nothing stops calling them without going through `ISender`)
+   needed an explicit `CancellationToken.None` at every call site; the old hand-rolled
+   `HandleAsync(request, CancellationToken ct = default)` signature had a default that MediatR's
+   interface contract doesn't offer. Small, but a real compile-time signal of the same shape as the
+   others: an interface's exact contract matters, and skimming past it costs you a rebuild-and-fix
+   cycle every time.
+
+### How it got verified live, not just by the test suite
+
+`EscalationCheckerService` is the first piece of code this project has that only *does* anything on
+a timer, unprompted by a request — none of the existing automated tests exercise "does the
+background service actually find and act on real data sitting in the real database." So it got
+checked the same way the Phase 2 REST endpoints did originally: for real, against the running app.
+A Sev1 incident with `OccurredAt` backdated 6 minutes was inserted directly into the dev database
+via `sqlcmd`, the API was started, and its own log output was read 35 seconds later:
+
+```
+warn: Beacon.Api.Incidents.EscalationCheckerService[0]
+      Incident e669d8c0-... (Sev1_Critical) unacknowledged past its escalation threshold — escalating
+```
+
+— confirmed independently via `GET /api/incidents/{id}` showing `"isEscalated": true`. As a bonus,
+the same run also escalated a *genuinely* 5-hour-old incident left over from Phase 2's original
+manual smoke-testing, still sitting unresolved in the dev database from earlier in this project —
+useful confirmation that `GetOpenIncidentsAsync` really does scan everything open, not just the one
+row planted for the test.
+
+### Common mistakes (and why this phase's code avoids them)
+
+1. **Trusting that a passing test suite means new "wiring" code (a background service, a DI
+   registration) actually works.** It means the *logic* it calls into is correct. Nothing in the 35
+   automated tests would have caught a `BackgroundService` that was registered but never actually
+   ticked, or ticked but resolved the wrong scope. The live check above is what actually verifies
+   the wiring, not the unit tests underneath it.
+2. **Assuming EF Core will error loudly on an unmapped derived type.** It doesn't, not at write
+   time. The failure mode is silent-then-delayed, which is worse than an immediate crash — write
+   down every derived-type addition to a TPH hierarchy as a two-step change (the CLR type, *and*
+   the discriminator registration) rather than trusting the compiler to remind you of the second one.
+3. **Pinning a package version without checking why.** MediatR 12.5.0 isn't "the version that
+   happened to install" — it's a deliberate choice with a documented reason, the same as
+   FluentAssertions' pin in Phase 1.
+
+### Interview questions this phase prepares you for
+
+- What does routing a background worker's actions through the same command bus as the API actually
+  buy you, concretely — not "it's cleaner," but what breaks without it?
+- Walk through what happens in EF Core when you save an entity of a derived type that was never
+  given an explicit TPH discriminator value. Why does the failure show up on read, not write?
+- Why is `EscalationCheckerService` given its own `IServiceScopeFactory`-created scope per tick
+  instead of just injecting `IIncidentRepository` directly into the (singleton) background service?
+- `IRequest` vs. `IRequest<TResponse>` in MediatR — what's actually different about the handler
+  interface each one requires you to implement?
+
+---
+
+## Next: Phase 6 — Reporting (EPPlus/PDFsharp certificate + report generation)
+
+Not started. Still open from earlier phases: once Docker's daemon is actually running and Redis is
+reachable, go back and write the live-Redis integration test Phase 3 left as an explicit open item;
+and push this repo's history to GitHub once the account/authentication issue on that end is sorted
+out.
