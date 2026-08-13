@@ -27,6 +27,20 @@ public sealed class IncidentEndpointsTests(BeaconApiFactory factory)
         incident.Severity.Should().Be("Sev1_Critical");
         incident.Status.Should().Be("Declared");
         incident.EventCount.Should().Be(1);
+        incident.Timeline.Should().ContainSingle();
+        incident.Timeline[0].EventType.Should().Be("Declared");
+    }
+
+    [Fact]
+    public async Task List_includes_a_just_declared_incident()
+    {
+        var id = await DeclareAsync("Should appear in the list", "fp-list-test");
+
+        var response = await _client.GetAsync("/api/incidents");
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var incidents = await response.Content.ReadFromJsonAsync<List<IncidentSummaryDto>>();
+        incidents.Should().Contain(i => i.Id == id && i.Title == "Should appear in the list");
     }
 
     [Fact]
@@ -160,5 +174,10 @@ public sealed class IncidentEndpointsTests(BeaconApiFactory factory)
         string Status,
         List<string> Responders,
         bool IsEscalated,
-        int EventCount);
+        int EventCount,
+        List<TimelineEntryDto> Timeline);
+
+    private sealed record TimelineEntryDto(DateTimeOffset OccurredAt, string EventType, string Actor, string Description);
+
+    private sealed record IncidentSummaryDto(Guid Id, string Title, string Severity, string Status, bool IsEscalated, DateTimeOffset DeclaredAt);
 }

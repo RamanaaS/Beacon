@@ -17,6 +17,9 @@ public sealed class IncidentRepository(BeaconDbContext context) : IIncidentRepos
         return all.Where(i => i.CurrentStatus != IncidentStatus.Resolved).ToList();
     }
 
+    public async Task<IReadOnlyList<Incident>> GetAllAsync(CancellationToken ct = default) =>
+        await context.Incidents.Include("_events").ToListAsync(ct);
+
     public void Add(Incident incident) => context.Incidents.Add(incident);
 
     public Task SaveChangesAsync(CancellationToken ct = default) => context.SaveChangesAsync(ct);

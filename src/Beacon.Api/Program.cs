@@ -26,6 +26,19 @@ builder.Services.AddHostedService<EscalationCheckerService>();
 builder.Services.AddAuthorizationBuilder()
     .AddPolicy("IncidentResponder", policy => policy.RequireRole(Roles.Responder, Roles.Admin));
 
+// Named "DevCors" deliberately, not applied unconditionally — an allowed-origin list for a real
+// deployed frontend is a production/deployment decision (Phase 18), not something to hardcode
+// alongside the Vite dev server's localhost origin. Only the dev policy exists so far.
+const string devCorsPolicy = "DevCors";
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy(devCorsPolicy, policy => policy
+        .WithOrigins("http://localhost:5173")
+        .AllowAnyHeader()
+        .AllowAnyMethod()
+        .AllowCredentials());
+});
+
 // Without this, System.Text.Json serializes/expects enums (Severity, IncidentStatus) as raw
 // numbers — technically correct, but "severity": 4 is unreadable over the wire compared to
 // "severity": "Sev1_Critical". A real, easy-to-forget default worth knowing about.
@@ -51,6 +64,11 @@ var app = builder.Build();
 
 app.UseExceptionHandler();
 app.UseWebSockets();
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseCors(devCorsPolicy);
+}
 
 app.UseAuthentication();
 app.UseAuthorization();

@@ -13,6 +13,17 @@ public static class IncidentEndpoints
     {
         var group = app.MapGroup("/api/incidents").WithTags("Incidents").RequireAuthorization();
 
+        group.MapGet("/", async (
+                ISender sender,
+                CancellationToken ct) =>
+            {
+                var response = await sender.Send(new ListIncidentsQuery(), ct);
+                return Results.Ok(response);
+            })
+            .WithName("ListIncidents")
+            .WithSummary("List every incident, newest first — backs the dashboard")
+            .Produces<IReadOnlyList<IncidentSummaryResponse>>();
+
         group.MapPost("/", async (
                 DeclareIncidentRequest request,
                 ClaimsPrincipal user,

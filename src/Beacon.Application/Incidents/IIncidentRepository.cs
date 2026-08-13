@@ -21,6 +21,13 @@ public interface IIncidentRepository
     /// </summary>
     Task<IReadOnlyList<Incident>> GetOpenIncidentsAsync(CancellationToken ct = default);
 
+    /// <summary>
+    /// Backs the dashboard's incident list — every incident, open or resolved, newest first.
+    /// Same in-memory-projection caveat as GetOpenIncidentsAsync: fine at this scale, a real
+    /// read-model would be the fix once "load everything" stops being cheap.
+    /// </summary>
+    Task<IReadOnlyList<Incident>> GetAllAsync(CancellationToken ct = default);
+
     void Add(Incident incident);
 
     Task SaveChangesAsync(CancellationToken ct = default);
