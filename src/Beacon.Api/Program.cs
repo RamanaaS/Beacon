@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 using Beacon.Api.Alerts;
 using Beacon.Api.Common;
 using Beacon.Api.Incidents;
+using Beacon.Api.Telemetry;
 using Beacon.Application;
 using Beacon.Infrastructure;
 using Beacon.Infrastructure.Incidents;
@@ -11,6 +12,9 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
+
+builder.Services.AddSingleton<WebSocketConnectionManager>();
+builder.Services.AddHostedService<MetricsSimulatorService>();
 
 // Without this, System.Text.Json serializes/expects enums (Severity, IncidentStatus) as raw
 // numbers — technically correct, but "severity": 4 is unreadable over the wire compared to
@@ -30,6 +34,7 @@ builder.Services.AddSwaggerGen();
 var app = builder.Build();
 
 app.UseExceptionHandler();
+app.UseWebSockets();
 
 if (app.Environment.IsDevelopment())
 {
@@ -44,6 +49,7 @@ if (app.Environment.IsDevelopment())
 
 app.MapIncidentEndpoints();
 app.MapAlertEndpoints();
+app.MapTelemetryEndpoints();
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }))
    .WithName("HealthCheck")

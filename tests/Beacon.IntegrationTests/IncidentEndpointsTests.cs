@@ -11,7 +11,8 @@ namespace Beacon.IntegrationTests;
 /// integration test is for — reusing the server's exact C# types would hide a real serialization
 /// break behind a compile-time contract that isn't what's actually crossing the network.
 /// </summary>
-public sealed class IncidentEndpointsTests(BeaconApiFactory factory) : IClassFixture<BeaconApiFactory>
+[Collection(IntegrationTestCollection.Name)]
+public sealed class IncidentEndpointsTests(BeaconApiFactory factory)
 {
     private readonly HttpClient _client = factory.CreateClient();
 
