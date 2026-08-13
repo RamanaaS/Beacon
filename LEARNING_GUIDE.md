@@ -793,7 +793,115 @@ genuine test instead of a shape check.
 
 ---
 
-## Next: Phase 7 — Auth (JWT + ASP.NET Core Identity)
+## Phase 7 — Auth (JWT + ASP.NET Core Identity)
+
+**Status: done.** 49/49 tests passing (33 unit + 16 integration, confirmed non-flaky over 3 runs),
+plus a full live walkthrough against the running app: unauthenticated declare → 401, register →
+login → real JWT, declare with that token → the incident's recorded actor traced back to the
+token's own claim (not anything the client sent), Viewer-role token → declare → 403.
+
+### Before coding
+
+**The actual point of this phase wasn't "add a login screen" — it was closing a real spoofing
+gap.** Every incident-mutating endpoint through Phase 6 trusted a `userId`/`declaredByUserId`
+field the *client* put in the JSON body. Nothing stopped a request claiming to be anyone. That's
+not a hypothetical: it's the textbook definition of a broken authentication/authorization
+vulnerability (OWASP's Broken Access Control has sat at #1 for a reason). Auth here means every
+mutating endpoint now derives "who did this" from a cryptographically signed JWT claim instead of
+trusting user input — see the "Security fix" section below for exactly what changed and why it's
+the real deliverable of this phase, not the login endpoints themselves.
+
+**Why auth doesn't go through MediatR.** ARCHITECTURE.md Section 9 scoped CQRS to incident
+orchestration specifically — Service Catalog and User Admin were named as the deliberate
+non-examples. Auth is a second, concrete instance of that same reasoning: `/api/auth/register` and
+`/api/auth/login` call `UserManager`/`SignInManager` directly, no command/query wrapper. Forcing
+every technically-write-shaped operation through the same CQRS machinery "for consistency" is
+exactly the over-application the architecture doc warned against from the start.
+
+**`AddIdentityCore`, not `AddIdentity`.** `AddIdentity` pulls in cookie-based authentication and
+external-login plumbing built for a server-rendered login page — dead weight for a pure JSON API
+with no cookies and no session state. `AddIdentityCore` + `.AddSignInManager()` gives exactly what
+this needs: password hashing, lockout tracking, and role management, nothing built for a UI that
+doesn't exist here.
+
+**Real brute-force protection, not just a password check.** Login uses
+`SignInManager.CheckPasswordSignInAsync(user, password, lockoutOnFailure: true)`, not a bare
+`UserManager.CheckPasswordAsync`. Five failed attempts locks the account for 15 minutes
+(`Lockout.MaxFailedAccessAttempts`/`DefaultLockoutTimeSpan` in `AddInfrastructure`) — a real,
+built-in Identity feature that a bare password comparison skips entirely.
+
+### The security fix — what actually changed across every incident endpoint
+
+| Before | After |
+|---|---|
+| `DeclareIncidentCommand` bound directly from the request JSON, `DeclaredByUserId` supplied by the client | A separate `DeclareIncidentRequest` (no user-id field) bound from JSON; the endpoint builds `DeclareIncidentCommand` itself using `user.GetUserId()` |
+| `AcknowledgeIncidentCommand`/`ResolveIncidentCommand`/`EscalateIncidentCommand` all took a client-supplied user id in the body | Same pattern — the body only carries what the *client* actually knows (a summary, an escalation target); the actor comes from the token |
+| No endpoint required authentication | `.RequireAuthorization()` on every incident endpoint; mutating ones additionally require the `IncidentResponder` policy (`Responder` or `Admin` role) |
+
+`ClaimsPrincipalExtensions.GetUserId()` reads the JWT's `sub` claim — the same claim
+`JwtTokenGenerator` writes when a token is issued, matched up explicitly (see the
+`MapInboundClaims = false` note below for why that match isn't automatic by default).
+
+**Deliberately not touched:** `/api/alerts/ingest` stays unauthenticated. Its caller is a
+monitoring tool (the real analog: Prometheus Alertmanager), not a human with a login flow —
+machine-to-machine ingestion needs an API-key or mTLS-based scheme, a genuinely different problem
+from user JWT auth, not something to bolt on incorrectly just to make every endpoint uniformly
+"protected." Also not touched: the `/ws/telemetry` WebSocket — browsers can't attach an
+`Authorization` header to a native WebSocket handshake, so real WebSocket auth needs the token
+passed as a query parameter and read in a custom `OnMessageReceived` handler. Left open, flagged
+explicitly, until a real client (the React dashboard, a later phase) actually needs it — right now
+telemetry is synthetic CPU/latency numbers, nothing sensitive enough to justify that complexity yet.
+
+### During coding — two real, non-obvious gotchas
+
+1. **`MapInboundClaims = false` — or your "sub" claim silently isn't "sub" anymore.**
+   `JwtSecurityTokenHandler` has default behavior (dating back to WCF-era .NET) that silently
+   remaps short JWT claim names to long `ClaimTypes.*` URIs when validating an incoming token — so
+   without this flag, a token written with a `sub` claim would come back out the other side under
+   `ClaimTypes.NameIdentifier` instead, and `GetUserId()`'s `FindFirstValue(sub)` would quietly
+   return null. Set once, in `AddJwtBearer`'s options, and now write-side and read-side claim
+   names actually match. (A decoded token's *role* claim still shows up as the long
+   `http://schemas.microsoft.com/ws/2008/06/identity/claims/role` URI, visible if you paste a
+   token into jwt.io — that one's from using `ClaimTypes.Role` deliberately in
+   `JwtTokenGenerator`, matching what ASP.NET Core's role-based authorization checks by default.
+   Different mechanism, same "claim names aren't always what you typed" lesson.)
+2. **`Microsoft.OpenApi` v2's breaking rewrite.** Adding a Swagger "Authorize" button
+   (`AddSecurityDefinition`/`AddSecurityRequirement`) failed to compile —
+   `Microsoft.OpenApi.Models` no longer exists in the v2.x line Swashbuckle 10 now pulls in
+   transitively. Deliberately not chased: it's a convenience for manually testing in the browser,
+   not something the actual auth enforcement depends on. Every endpoint's JWT validation and role
+   policy works identically with or without it — verified via the live curl-equivalent walkthrough,
+   not the missing button.
+
+### Common mistakes (and why this phase's code avoids them)
+
+1. **Treating "add a login endpoint" as the finish line.** The login endpoint existing means
+   nothing if every other endpoint still trusts a client-supplied identity field. The actual fix
+   is removing that field everywhere it existed and proving (with a test, not an assumption) that
+   the server-derived identity is what actually gets recorded.
+2. **`AddIdentity` by reflex, without asking whether the cookie/external-login half of it applies.**
+   A pure JSON API has no session cookie to issue — pulling in the tooling for one anyway is
+   exactly the kind of unnecessary-by-default choice this project has avoided everywhere else.
+3. **A bare password-hash comparison instead of `CheckPasswordSignInAsync`.** They look almost
+   identical to write and produce identical happy-path behavior — the difference only shows up
+   under a real brute-force attempt, which is exactly the scenario a demo/test run never exercises
+   by accident. Worth choosing deliberately, not by whichever one autocompletes first.
+
+### Interview questions this phase prepares you for
+
+- Walk through exactly what changed in the request/response contract of `POST /api/incidents` to
+  close the client-supplied-identity gap, and why the naive fix ("just validate the userId field
+  matches the token") would still be wrong.
+- Why does `/api/alerts/ingest` deliberately stay unauthenticated while every incident endpoint
+  requires a token? What's the actual difference in trust model?
+- What does `MapInboundClaims = false` actually change, and what bug does it prevent?
+- Why `AddIdentityCore` + `AddSignInManager` instead of `AddIdentity` for an API-only service?
+- Why doesn't auth get routed through MediatR when incident orchestration does? What's the actual
+  test for "this belongs in the CQRS-scoped module" vs. "this doesn't"?
+
+---
+
+## Next: Phase 8 — AI Integration (Claude API postmortem drafting)
 
 Not started. Still open from earlier phases: once Docker's daemon is actually running and Redis is
 reachable, go back and write the live-Redis integration test Phase 3 left as an explicit open item;
