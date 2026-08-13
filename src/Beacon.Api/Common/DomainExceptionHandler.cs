@@ -1,3 +1,4 @@
+using Beacon.Application.Common;
 using Beacon.Application.Incidents;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
@@ -17,6 +18,7 @@ public sealed class DomainExceptionHandler(IProblemDetailsService problemDetails
         var (statusCode, title) = exception switch
         {
             IncidentNotFoundException => (StatusCodes.Status404NotFound, "Incident not found"),
+            ExternalServiceNotConfiguredException => (StatusCodes.Status503ServiceUnavailable, "External service not configured"),
             ArgumentException => (StatusCodes.Status400BadRequest, "Invalid request"),
             InvalidOperationException => (StatusCodes.Status409Conflict, "Incident state conflict"),
             _ => (0, string.Empty)

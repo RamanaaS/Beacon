@@ -111,6 +111,23 @@ public static class IncidentEndpoints
             .WithSummary("Download the incident as a PDF postmortem report")
             .ProducesProblem(StatusCodes.Status404NotFound);
 
+        group.MapPost("/{id:guid}/postmortem/draft", async (
+                Guid id,
+                ISender sender,
+                CancellationToken ct) =>
+            {
+                var result = await sender.Send(new GenerateIncidentPostmortemDraftQuery(new IncidentId(id)), ct);
+                return Results.Ok(result);
+            })
+            .WithName("GenerateIncidentPostmortemDraft")
+            .WithSummary("AI-drafted postmortem for a resolved incident, via the Claude API — a draft for a " +
+                         "human to review and edit, never a final artifact")
+            .RequireAuthorization("IncidentResponder")
+            .Produces<PostmortemDraftResponse>()
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status409Conflict)
+            .ProducesProblem(StatusCodes.Status503ServiceUnavailable);
+
         return group;
     }
 

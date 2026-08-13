@@ -42,8 +42,28 @@ public static class DependencyInjection
         services.AddSingleton<IRecentAlertsStore, RedisRecentAlertsStore>();
 
         services.AddAuthInfrastructure(configuration);
+        services.AddClaudeIntegration(configuration);
 
         return services;
+    }
+
+    private static void AddClaudeIntegration(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.Configure<ClaudeSettings>(configuration.GetSection("Claude"));
+        var claudeSettings = configuration.GetSection("Claude").Get<ClaudeSettings>() ?? new ClaudeSettings();
+
+        // AddStandardResilienceHandler is the current (2024+) way to attach Polly to an
+        // HttpClient — it supersedes the older Microsoft.Extensions.Http.Polly package's
+        // AddPolicyHandler style. One call gives retry (with jittered exponential backoff),
+        // a circuit breaker, and both a per-attempt and a total-request timeout — exactly the
+        // resilience ARCHITECTURE.md named for "the LLM API call," a real external dependency
+        // that can fail or rate-limit independently of Beacon itself.
+        services.AddHttpClient<IPostmortemDraftGenerator, ClaudePostmortemDraftGenerator>(client =>
+            {
+                client.BaseAddress = new Uri(claudeSettings.BaseUrl);
+                client.Timeout = TimeSpan.FromSeconds(30);
+            })
+            .AddStandardResilienceHandler();
     }
 
     private static void AddAuthInfrastructure(this IServiceCollection services, IConfiguration configuration)
