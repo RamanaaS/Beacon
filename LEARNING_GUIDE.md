@@ -901,9 +901,120 @@ telemetry is synthetic CPU/latency numbers, nothing sensitive enough to justify 
 
 ---
 
-## Next: Phase 8 — AI Integration (Claude API postmortem drafting)
+## Phase 8 — AI Integration (Claude API postmortem drafting)
+
+**Status: done, code-verified but not yet live-called.** 57/57 tests passing (39 unit + 18
+integration). This is the one LLM endpoint named all the way back in `career_roadmap_reasoning.md`
+("covers the AI integration fluency expectation from the market") and it's the direct payoff of the
+Anthropic "AI Fluency" cert already on the resume — this gives that cert a real, working example
+behind it, not just a line item.
+
+**Honest state of verification:** the request/response contract is proven correct against a
+stubbed HTTP handler built from Anthropic's real documented API shape (below), and the app's
+behavior with no API key configured is proven live (starts fine, the one endpoint that needs it
+returns a clean 503). What's *not* yet proven is a real network round-trip against the actual
+Anthropic API, because that needs a real, billable API key this environment doesn't have. If you
+want that last mile verified, set one via `dotnet user-secrets set Claude:ApiKey <key>` in
+`src/Beacon.Api` (never in appsettings.json — see `ClaudeSettings.cs`) and say so; until then, this
+phase's live-verification bar is met the same way Phase 3's Redis work was: everything provably
+correct except the one piece needing a credential I don't have.
+
+### Before coding
+
+**Why the query, not just a raw prompt, matters.** `PostmortemPromptBuilder.Build` reuses
+`IncidentEventFormatter` (Phase 6) directly for the timeline section — the same event-to-text
+rendering the Excel/PDF reports use, not a third, independently-drifting way of describing an
+`IncidentEvent`. The prompt also explicitly tells the model this is a **draft for human review**
+and instructs it not to invent details beyond the timeline — both are real prompt-engineering
+choices to reduce hallucination risk in a business-report context, not boilerplate.
+
+**Why a hand-rolled HTTP call instead of the official Anthropic SDK.** A real production system
+calling several Anthropic endpoints would likely prefer the SDK for maintenance reasons. For one
+endpoint in a portfolio project, a direct, visible HTTP call is the better teaching artifact — the
+request shape, headers, and resilience policy are all *readable in this codebase*, not hidden
+inside SDK internals. A real trade-off, made deliberately, not by default.
+
+**Why `AddStandardResilienceHandler`, not the older `Microsoft.Extensions.Http.Polly` package.**
+ARCHITECTURE.md named Polly explicitly for "the LLM API call" — a real external dependency that
+can fail, rate-limit, or time out independently of Beacon. `AddStandardResilienceHandler` (built on
+Polly v8, part of `Microsoft.Extensions.Http.Resilience`) is the current, Microsoft-recommended way
+to get retry + circuit breaker + timeout on an `HttpClient` as of .NET 8+; the older
+`AddPolicyHandler`-style Polly integration is the deprecated approach worth recognizing, not reaching
+for by habit.
+
+**A new, more correct HTTP status than anything used before.** `ExternalServiceNotConfiguredException`
+→ 503 is a genuinely different case from every existing mapping in `DomainExceptionHandler`: not
+"bad input" (400), not "doesn't exist" (404), not "wrong domain state" (409) — a missing
+*deployment-time configuration* is its own failure mode with its own correct status code, and
+conflating it with 409 (as reusing `InvalidOperationException` would have done) would have been
+semantically sloppy.
+
+### During coding — one real, easy-to-miss deserialization gotcha
+
+`ClaudeMessageResponse`/`ClaudeContentBlock` use explicit `[JsonPropertyName("content")]`,
+`[JsonPropertyName("text")]`, etc. on every property, rather than relying on default matching.
+This isn't decorative: `System.Net.Http.Json`'s `ReadFromJsonAsync<T>()` does **not** use
+ASP.NET Core's web JSON defaults (camelCase + case-insensitive matching) — it uses plain
+`System.Text.Json` defaults, which are case-sensitive. Anthropic's real API returns lowercase JSON
+keys (`"content"`, `"type"`, `"text"`); without the explicit attributes, PascalCase C# record
+properties (`Content`, `Type`, `Text`) simply wouldn't bind, and the code would silently produce an
+empty list instead of throwing — surfacing later as a confusing "no text content block" error even
+against a perfectly valid API response. Caught by writing the stubbed-response test with Anthropic's
+*real* lowercase JSON shape before assuming the naive record definition would just work.
+
+### How this got verified without a real API key
+
+Two genuinely different kinds of test, deliberately not confused with each other:
+
+1. **`ClaudePostmortemDraftGeneratorTests`** constructs `ClaudePostmortemDraftGenerator` directly
+   with a hand-written stub `HttpMessageHandler` (not through DI, not through
+   `WebApplicationFactory`) that returns realistic Anthropic-shaped JSON. It asserts on the actual
+   outgoing request — URL, `x-api-key`/`anthropic-version` headers, `model`/`max_tokens`/`messages`
+   body shape — and on the parsed response text. This is what caught the JSON casing gotcha above.
+2. **`GenerateIncidentPostmortemDraftQueryHandlerTests`** uses a trivial in-memory fake
+   `IPostmortemDraftGenerator` (no HTTP at all) to prove the *business rule* — unresolved incidents
+   throw and never even reach the generator — independent of whether Claude's API contract is
+   involved.
+
+Deliberately not built: a full `WebApplicationFactory`-based integration test hitting the real
+endpoint end-to-end. That would need either a real API key (a real, billable dependency to keep
+green in CI) or DI-level handler substitution inside the shared test factory, and the marginal
+value over the two test types above is low — the endpoint's routing/auth/MediatR wiring is already
+proven correct by every other endpoint using the identical pattern.
+
+### Common mistakes (and why this phase's code avoids them)
+
+1. **Assuming a response DTO's default property matching "just works" against a third-party API.**
+   It depends entirely on which JSON stack and which defaults are in play — provably different
+   between `System.Net.Http.Json` and ASP.NET Core's own web pipeline. Explicit
+   `[JsonPropertyName]` attributes remove the ambiguity instead of hoping the defaults line up.
+2. **Giving a real external secret a "dev placeholder" the way `Jwt:SigningKey` got one.** A JWT
+   signing key only has to be internally self-consistent for local dev to function; a Claude API
+   key is a real, billable, external credential with no honest placeholder value — leaving it empty
+   and failing loudly (503, not silent nonsense output) is the correct default, not a gap.
+3. **Building a slow, brittle "real" integration test just to look thorough.** A test that needs a
+   live, billable external API to stay green is a maintenance liability, not a stronger guarantee —
+   the stub-based test proves the same contract correctness deterministically and for free.
+
+### Interview questions this phase prepares you for
+
+- Walk through why the JSON deserialization would have silently failed without explicit
+  `[JsonPropertyName]` attributes, and in which specific API (`System.Net.Http.Json` vs. ASP.NET
+  Core's own JSON handling) that default actually differs.
+- What does `AddStandardResilienceHandler` give you by default, and why does an LLM API call
+  specifically need retry/circuit-breaker/timeout more than, say, a call to your own database?
+- Why 503 for a missing API key instead of 500 or 409? What's the actual semantic difference a
+  caller should be able to rely on?
+- What's the actual trade-off between a hand-rolled HTTP client and an official SDK for a
+  third-party API — and why did this project deliberately choose differently from what a real
+  production system consuming many Anthropic endpoints probably should?
+
+---
+
+## Next: Phase 9 — Web Dashboard (React + MobX)
 
 Not started. Still open from earlier phases: once Docker's daemon is actually running and Redis is
 reachable, go back and write the live-Redis integration test Phase 3 left as an explicit open item;
-and push this repo's history to GitHub once the account/authentication issue on that end is sorted
-out.
+push this repo's history to GitHub once the account/authentication issue on that end is sorted out;
+and, if a real Anthropic API key gets configured via user-secrets, do the one remaining live
+end-to-end call this phase's code is otherwise fully ready for.
