@@ -73,6 +73,20 @@ public sealed class IncidentEndpointsTests(BeaconApiFactory factory)
     }
 
     [Fact]
+    public async Task Escalate_sets_IsEscalated_and_appends_an_event()
+    {
+        var id = await DeclareAsync("Needs escalation test incident", "fp-escalate");
+
+        (await _client.PostAsJsonAsync($"/api/incidents/{id}/escalate",
+                new { escalatedByUserId = "user-9", escalatedTo = "secondary-oncall" }))
+            .StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var incident = await GetAsync(id);
+        incident.IsEscalated.Should().BeTrue();
+        incident.EventCount.Should().Be(2); // Declared + Escalated
+    }
+
+    [Fact]
     public async Task Acting_on_a_resolved_incident_returns_409()
     {
         var id = await DeclareAsync("Already resolved test incident", "fp-already-resolved");
@@ -115,5 +129,6 @@ public sealed class IncidentEndpointsTests(BeaconApiFactory factory)
         string Severity,
         string Status,
         List<string> Responders,
+        bool IsEscalated,
         int EventCount);
 }

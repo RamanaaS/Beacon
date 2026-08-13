@@ -12,6 +12,15 @@ public interface IIncidentRepository
 {
     Task<Incident?> GetByIdAsync(IncidentId id, CancellationToken ct = default);
 
+    /// <summary>
+    /// Used by EscalationCheckerService to find escalation candidates. Filters in-memory after
+    /// loading, not in SQL — CurrentStatus is a computed projection over the event log, not a
+    /// stored column, so it can't be translated into a WHERE clause. Fine at this project's
+    /// scale; a denormalized "current status" read-model column is the real fix once "load every
+    /// incident to find the handful that are still open" stops being cheap.
+    /// </summary>
+    Task<IReadOnlyList<Incident>> GetOpenIncidentsAsync(CancellationToken ct = default);
+
     void Add(Incident incident);
 
     Task SaveChangesAsync(CancellationToken ct = default);

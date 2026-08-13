@@ -102,6 +102,23 @@ namespace Beacon.Infrastructure.Migrations
                     b.HasDiscriminator().HasValue("Declared");
                 });
 
+            modelBuilder.Entity("Beacon.Domain.Incidents.IncidentEscalated", b =>
+                {
+                    b.HasBaseType("Beacon.Domain.Incidents.IncidentEvent");
+
+                    b.Property<string>("EscalatedByUserId")
+                        .IsRequired()
+                        .ValueGeneratedOnUpdateSometimes()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("PerformedByUserId");
+
+                    b.Property<string>("EscalatedTo")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.HasDiscriminator().HasValue("Escalated");
+                });
+
             modelBuilder.Entity("Beacon.Domain.Incidents.IncidentResolved", b =>
                 {
                     b.HasBaseType("Beacon.Domain.Incidents.IncidentEvent");

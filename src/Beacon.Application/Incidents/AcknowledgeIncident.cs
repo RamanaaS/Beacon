@@ -1,19 +1,21 @@
 using Beacon.Application.Common;
 using Beacon.Domain.Incidents;
+using MediatR;
 
 namespace Beacon.Application.Incidents;
 
-public sealed record AcknowledgeIncidentRequest(IncidentId IncidentId, string UserId);
+public sealed record AcknowledgeIncidentCommand(IncidentId IncidentId, string UserId) : IRequest;
 
-public sealed class AcknowledgeIncidentHandler(IIncidentRepository repository, IClock clock)
+public sealed class AcknowledgeIncidentCommandHandler(IIncidentRepository repository, IClock clock)
+    : IRequestHandler<AcknowledgeIncidentCommand>
 {
-    public async Task HandleAsync(AcknowledgeIncidentRequest request, CancellationToken ct = default)
+    public async Task Handle(AcknowledgeIncidentCommand request, CancellationToken cancellationToken)
     {
-        var incident = await repository.GetByIdAsync(request.IncidentId, ct)
+        var incident = await repository.GetByIdAsync(request.IncidentId, cancellationToken)
             ?? throw new IncidentNotFoundException(request.IncidentId);
 
         incident.Acknowledge(request.UserId, clock.UtcNow);
 
-        await repository.SaveChangesAsync(ct);
+        await repository.SaveChangesAsync(cancellationToken);
     }
 }

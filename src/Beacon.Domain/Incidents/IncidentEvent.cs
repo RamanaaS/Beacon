@@ -49,6 +49,12 @@ public sealed record IncidentAcknowledged(
     string UserId
 ) : IncidentEvent(OccurredAt);
 
+public sealed record IncidentEscalated(
+    DateTimeOffset OccurredAt,
+    string EscalatedByUserId,
+    string EscalatedTo
+) : IncidentEvent(OccurredAt);
+
 public sealed record IncidentResolved(
     DateTimeOffset OccurredAt,
     string UserId,

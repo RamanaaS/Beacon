@@ -87,6 +87,15 @@ public sealed class Incident
         Raise(new IncidentResolved(occurredAt, userId, summary));
     }
 
+    public void Escalate(string escalatedByUserId, string escalatedTo, DateTimeOffset occurredAt)
+    {
+        if (string.IsNullOrWhiteSpace(escalatedTo))
+            throw new ArgumentException("Escalation requires a target.", nameof(escalatedTo));
+
+        EnsureNotResolved();
+        Raise(new IncidentEscalated(occurredAt, escalatedByUserId, escalatedTo));
+    }
+
     public string Title => _events.OfType<IncidentDeclared>().Single().Title;
 
     public Severity CurrentSeverity =>
@@ -104,6 +113,10 @@ public sealed class Incident
 
     public IReadOnlyList<string> Responders =>
         _events.OfType<ResponderJoined>().Select(e => e.UserId).Distinct().ToList();
+
+    public bool IsEscalated => _events.OfType<IncidentEscalated>().Any();
+
+    public DateTimeOffset DeclaredAt => _events.OfType<IncidentDeclared>().Single().OccurredAt;
 
     private void EnsureNotResolved()
     {

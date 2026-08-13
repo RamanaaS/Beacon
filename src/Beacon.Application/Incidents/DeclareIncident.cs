@@ -1,25 +1,27 @@
 using Beacon.Application.Common;
 using Beacon.Domain.Common;
 using Beacon.Domain.Incidents;
+using MediatR;
 
 namespace Beacon.Application.Incidents;
 
-public sealed record DeclareIncidentRequest(
+/// <summary>
+/// Now a real MediatR command — this phase is where that stops being ceremony. See
+/// ARCHITECTURE.md Section 9 and LEARNING_GUIDE.md Phase 5 for why: escalation checking (a
+/// background worker, not an HTTP request) needs to issue the same "act on an incident" commands
+/// as the API does, and CQRS is what gives both callers one shared entry point without the
+/// worker depending on Beacon.Api or the API depending on worker internals.
+/// </summary>
+public sealed record DeclareIncidentCommand(
     string Title,
     Severity Severity,
     string DeclaredByUserId,
-    string AlertFingerprint);
+    string AlertFingerprint) : IRequest<IncidentId>;
 
-/// <summary>
-/// Plain orchestration class, deliberately not a MediatR command. At this complexity — one
-/// aggregate, one repository call — MediatR would be pure ceremony. It shows up in Phase 4
-/// once the incident engine actually needs command/query separation (escalation evaluation,
-/// domain-event side effects); see ARCHITECTURE.md Section 9 for why CQRS is scoped there and
-/// not applied blanket across the whole app.
-/// </summary>
-public sealed class DeclareIncidentHandler(IIncidentRepository repository, IClock clock)
+public sealed class DeclareIncidentCommandHandler(IIncidentRepository repository, IClock clock)
+    : IRequestHandler<DeclareIncidentCommand, IncidentId>
 {
-    public async Task<IncidentId> HandleAsync(DeclareIncidentRequest request, CancellationToken ct = default)
+    public async Task<IncidentId> Handle(DeclareIncidentCommand request, CancellationToken cancellationToken)
     {
         var incident = Incident.Declare(
             request.Title,
@@ -29,7 +31,7 @@ public sealed class DeclareIncidentHandler(IIncidentRepository repository, ICloc
             clock.UtcNow);
 
         repository.Add(incident);
-        await repository.SaveChangesAsync(ct);
+        await repository.SaveChangesAsync(cancellationToken);
 
         return incident.Id;
     }

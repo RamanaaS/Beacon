@@ -110,6 +110,38 @@ public class IncidentTests
     }
 
     [Fact]
+    public void Escalate_appends_an_IncidentEscalated_event_and_sets_IsEscalated()
+    {
+        var incident = Declared();
+
+        incident.Escalate("system", "secondary-oncall", Now.AddMinutes(5));
+
+        incident.IsEscalated.Should().BeTrue();
+        incident.Events.OfType<IncidentEscalated>().Single().EscalatedTo.Should().Be("secondary-oncall");
+    }
+
+    [Fact]
+    public void Escalate_requires_a_target()
+    {
+        var incident = Declared();
+
+        var act = () => incident.Escalate("system", "", Now.AddMinutes(5));
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void A_resolved_incident_rejects_escalation_too()
+    {
+        var incident = Declared();
+        incident.Resolve("user-7", "fixed", Now.AddMinutes(10));
+
+        var act = () => incident.Escalate("system", "secondary-oncall", Now.AddMinutes(11));
+
+        act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
     public void Rehydrate_reconstructs_current_state_purely_from_history()
     {
         var original = Declared(severity: Severity.Sev3_Medium);

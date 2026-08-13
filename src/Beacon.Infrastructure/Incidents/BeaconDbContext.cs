@@ -69,7 +69,8 @@ public sealed class BeaconDbContext(DbContextOptions<BeaconDbContext> options) :
                 .HasValue<NoteAdded>("NoteAdded")
                 .HasValue<SeverityChanged>("SeverityChanged")
                 .HasValue<IncidentAcknowledged>("Acknowledged")
-                .HasValue<IncidentResolved>("Resolved");
+                .HasValue<IncidentResolved>("Resolved")
+                .HasValue<IncidentEscalated>("Escalated");
         });
 
         // Every event type has a "who did this" field, but under different property names
@@ -117,6 +118,12 @@ public sealed class BeaconDbContext(DbContextOptions<BeaconDbContext> options) :
         {
             entity.Property(e => e.UserId).HasColumnName(performedByColumn).IsRequired();
             entity.Property(e => e.Summary).IsRequired();
+        });
+
+        modelBuilder.Entity<IncidentEscalated>(entity =>
+        {
+            entity.Property(e => e.EscalatedByUserId).HasColumnName(performedByColumn).IsRequired();
+            entity.Property(e => e.EscalatedTo).IsRequired();
         });
     }
 }

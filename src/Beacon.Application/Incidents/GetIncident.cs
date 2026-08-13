@@ -1,5 +1,6 @@
 using Beacon.Domain.Common;
 using Beacon.Domain.Incidents;
+using MediatR;
 
 namespace Beacon.Application.Incidents;
 
@@ -9,14 +10,18 @@ public sealed record IncidentResponse(
     Severity Severity,
     IncidentStatus Status,
     IReadOnlyList<string> Responders,
+    bool IsEscalated,
     int EventCount);
 
-public sealed class GetIncidentHandler(IIncidentRepository repository)
+public sealed record GetIncidentQuery(IncidentId Id) : IRequest<IncidentResponse>;
+
+public sealed class GetIncidentQueryHandler(IIncidentRepository repository)
+    : IRequestHandler<GetIncidentQuery, IncidentResponse>
 {
-    public async Task<IncidentResponse> HandleAsync(IncidentId id, CancellationToken ct = default)
+    public async Task<IncidentResponse> Handle(GetIncidentQuery request, CancellationToken cancellationToken)
     {
-        var incident = await repository.GetByIdAsync(id, ct)
-            ?? throw new IncidentNotFoundException(id);
+        var incident = await repository.GetByIdAsync(request.Id, cancellationToken)
+            ?? throw new IncidentNotFoundException(request.Id);
 
         return new IncidentResponse(
             incident.Id,
@@ -24,6 +29,7 @@ public sealed class GetIncidentHandler(IIncidentRepository repository)
             incident.CurrentSeverity,
             incident.CurrentStatus,
             incident.Responders,
+            incident.IsEscalated,
             incident.Events.Count);
     }
 }

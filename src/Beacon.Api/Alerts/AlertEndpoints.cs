@@ -1,4 +1,5 @@
 using Beacon.Application.Alerts;
+using MediatR;
 
 namespace Beacon.Api.Alerts;
 
@@ -9,11 +10,11 @@ public static class AlertEndpoints
         var group = app.MapGroup("/api/alerts").WithTags("Alerts");
 
         group.MapPost("/ingest", async (
-                IngestAlertRequest request,
-                IngestAlertHandler handler,
+                IngestAlertCommand command,
+                ISender sender,
                 CancellationToken ct) =>
             {
-                var result = await handler.HandleAsync(request, ct);
+                var result = await sender.Send(command, ct);
                 return Results.Ok(result);
             })
             .WithName("IngestAlert")

@@ -15,6 +15,7 @@ builder.Services.AddInfrastructure(builder.Configuration);
 
 builder.Services.AddSingleton<WebSocketConnectionManager>();
 builder.Services.AddHostedService<MetricsSimulatorService>();
+builder.Services.AddHostedService<EscalationCheckerService>();
 
 // Without this, System.Text.Json serializes/expects enums (Severity, IncidentStatus) as raw
 // numbers — technically correct, but "severity": 4 is unreadable over the wire compared to

@@ -38,6 +38,12 @@ internal sealed class InMemoryIncidentRepository : IIncidentRepository
     public Task<Incident?> GetByIdAsync(IncidentId id, CancellationToken ct = default) =>
         Task.FromResult(_incidents.GetValueOrDefault(id));
 
+    public Task<IReadOnlyList<Incident>> GetOpenIncidentsAsync(CancellationToken ct = default)
+    {
+        IReadOnlyList<Incident> open = _incidents.Values.Where(i => i.CurrentStatus != IncidentStatus.Resolved).ToList();
+        return Task.FromResult(open);
+    }
+
     public void Add(Incident incident) => _incidents[incident.Id] = incident;
 
     public Task SaveChangesAsync(CancellationToken ct = default) => Task.CompletedTask;
