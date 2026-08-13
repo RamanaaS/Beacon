@@ -72,6 +72,33 @@ public static class IncidentEndpoints
             .WithSummary("Manually escalate an incident (the same command EscalationCheckerService issues automatically)")
             .ProducesProblem(StatusCodes.Status404NotFound);
 
+        group.MapGet("/{id:guid}/report.xlsx", async (
+                Guid id,
+                ISender sender,
+                CancellationToken ct) =>
+            {
+                var bytes = await sender.Send(new GenerateIncidentExcelReportQuery(new IncidentId(id)), ct);
+                return Results.File(
+                    bytes,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    $"incident-{id}.xlsx");
+            })
+            .WithName("GetIncidentExcelReport")
+            .WithSummary("Download the incident's timeline as an Excel workbook")
+            .ProducesProblem(StatusCodes.Status404NotFound);
+
+        group.MapGet("/{id:guid}/report.pdf", async (
+                Guid id,
+                ISender sender,
+                CancellationToken ct) =>
+            {
+                var bytes = await sender.Send(new GenerateIncidentPdfReportQuery(new IncidentId(id)), ct);
+                return Results.File(bytes, "application/pdf", $"incident-{id}.pdf");
+            })
+            .WithName("GetIncidentPdfReport")
+            .WithSummary("Download the incident as a PDF postmortem report")
+            .ProducesProblem(StatusCodes.Status404NotFound);
+
         return group;
     }
 

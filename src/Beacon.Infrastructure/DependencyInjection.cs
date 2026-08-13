@@ -25,6 +25,7 @@ public static class DependencyInjection
 
         services.AddScoped<IIncidentRepository, IncidentRepository>();
         services.AddSingleton<IClock, SystemClock>();
+        services.AddScoped<IIncidentReportGenerator, IncidentReportGenerator>();
 
         // ConnectionMultiplexer.Connect normally throws immediately if Redis isn't reachable —
         // abortConnect=false (set on the connection string) lets the app start regardless and
