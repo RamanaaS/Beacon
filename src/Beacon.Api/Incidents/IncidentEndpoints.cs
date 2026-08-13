@@ -1,4 +1,7 @@
+using System.Security.Claims;
+using Beacon.Api.Auth;
 using Beacon.Application.Incidents;
+using Beacon.Domain.Common;
 using Beacon.Domain.Incidents;
 using MediatR;
 
@@ -8,18 +11,22 @@ public static class IncidentEndpoints
 {
     public static RouteGroupBuilder MapIncidentEndpoints(this IEndpointRouteBuilder app)
     {
-        var group = app.MapGroup("/api/incidents").WithTags("Incidents");
+        var group = app.MapGroup("/api/incidents").WithTags("Incidents").RequireAuthorization();
 
         group.MapPost("/", async (
-                DeclareIncidentCommand command,
+                DeclareIncidentRequest request,
+                ClaimsPrincipal user,
                 ISender sender,
                 CancellationToken ct) =>
             {
+                var command = new DeclareIncidentCommand(
+                    request.Title, request.Severity, user.GetUserId(), request.AlertFingerprint);
                 var id = await sender.Send(command, ct);
                 return Results.Created($"/api/incidents/{id}", new { id });
             })
             .WithName("DeclareIncident")
             .WithSummary("Declare a new incident")
+            .RequireAuthorization("IncidentResponder")
             .Produces(StatusCodes.Status201Created)
             .ProducesValidationProblem();
 
@@ -37,39 +44,44 @@ public static class IncidentEndpoints
 
         group.MapPost("/{id:guid}/acknowledge", async (
                 Guid id,
-                AcknowledgeIncidentBody body,
+                ClaimsPrincipal user,
                 ISender sender,
                 CancellationToken ct) =>
             {
-                await sender.Send(new AcknowledgeIncidentCommand(new IncidentId(id), body.UserId), ct);
+                await sender.Send(new AcknowledgeIncidentCommand(new IncidentId(id), user.GetUserId()), ct);
                 return Results.NoContent();
             })
             .WithName("AcknowledgeIncident")
+            .RequireAuthorization("IncidentResponder")
             .ProducesProblem(StatusCodes.Status404NotFound);
 
         group.MapPost("/{id:guid}/resolve", async (
                 Guid id,
                 ResolveIncidentBody body,
+                ClaimsPrincipal user,
                 ISender sender,
                 CancellationToken ct) =>
             {
-                await sender.Send(new ResolveIncidentCommand(new IncidentId(id), body.UserId, body.Summary), ct);
+                await sender.Send(new ResolveIncidentCommand(new IncidentId(id), user.GetUserId(), body.Summary), ct);
                 return Results.NoContent();
             })
             .WithName("ResolveIncident")
+            .RequireAuthorization("IncidentResponder")
             .ProducesProblem(StatusCodes.Status404NotFound);
 
         group.MapPost("/{id:guid}/escalate", async (
                 Guid id,
                 EscalateIncidentBody body,
+                ClaimsPrincipal user,
                 ISender sender,
                 CancellationToken ct) =>
             {
-                await sender.Send(new EscalateIncidentCommand(new IncidentId(id), body.EscalatedByUserId, body.EscalatedTo), ct);
+                await sender.Send(new EscalateIncidentCommand(new IncidentId(id), user.GetUserId(), body.EscalatedTo), ct);
                 return Results.NoContent();
             })
             .WithName("EscalateIncident")
             .WithSummary("Manually escalate an incident (the same command EscalationCheckerService issues automatically)")
+            .RequireAuthorization("IncidentResponder")
             .ProducesProblem(StatusCodes.Status404NotFound);
 
         group.MapGet("/{id:guid}/report.xlsx", async (
@@ -102,9 +114,15 @@ public static class IncidentEndpoints
         return group;
     }
 
-    private sealed record AcknowledgeIncidentBody(string UserId);
+    /// <summary>
+    /// No DeclaredByUserId/UserId/EscalatedByUserId field on any request body anymore — "who did
+    /// this" comes from the authenticated JWT's claims (see ClaimsPrincipalExtensions.GetUserId),
+    /// never from something the client could put in a JSON field. A client-supplied identity
+    /// field is exactly the spoofing gap authentication exists to close.
+    /// </summary>
+    private sealed record DeclareIncidentRequest(string Title, Severity Severity, string AlertFingerprint);
 
-    private sealed record ResolveIncidentBody(string UserId, string Summary);
+    private sealed record ResolveIncidentBody(string Summary);
 
-    private sealed record EscalateIncidentBody(string EscalatedByUserId, string EscalatedTo);
+    private sealed record EscalateIncidentBody(string EscalatedTo);
 }

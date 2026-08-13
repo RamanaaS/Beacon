@@ -16,13 +16,13 @@ namespace Beacon.IntegrationTests;
 [Collection(IntegrationTestCollection.Name)]
 public sealed class IncidentReportTests(BeaconApiFactory factory)
 {
-    private readonly HttpClient _client = factory.CreateClient();
+    private readonly HttpClient _client = factory.CreateAuthenticatedClient(factory.ResponderToken);
 
     [Fact]
     public async Task Excel_report_contains_the_incident_summary_and_full_timeline()
     {
         var id = await DeclareAsync("Report test incident", "fp-report-xlsx");
-        (await _client.PostAsJsonAsync($"/api/incidents/{id}/acknowledge", new { userId = "user-7" }))
+        (await _client.PostAsJsonAsync($"/api/incidents/{id}/acknowledge", new { }))
             .EnsureSuccessStatusCode();
 
         var response = await _client.GetAsync($"/api/incidents/{id}/report.xlsx");
@@ -76,7 +76,6 @@ public sealed class IncidentReportTests(BeaconApiFactory factory)
         {
             title,
             severity = "Sev1_Critical",
-            declaredByUserId = "user-42",
             alertFingerprint = fingerprint
         });
 

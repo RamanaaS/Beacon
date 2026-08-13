@@ -1,11 +1,14 @@
 using System.Text.Json.Serialization;
 using Beacon.Api.Alerts;
+using Beacon.Api.Auth;
 using Beacon.Api.Common;
 using Beacon.Api.Incidents;
 using Beacon.Api.Telemetry;
 using Beacon.Application;
 using Beacon.Infrastructure;
+using Beacon.Infrastructure.Auth;
 using Beacon.Infrastructure.Incidents;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -16,6 +19,12 @@ builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddSingleton<WebSocketConnectionManager>();
 builder.Services.AddHostedService<MetricsSimulatorService>();
 builder.Services.AddHostedService<EscalationCheckerService>();
+
+// Read-only access needs any authenticated user; acting on an incident needs Responder or
+// Admin. Viewer-only accounts (auditors, stakeholders watching a status page) can never declare,
+// acknowledge, resolve, or escalate — enforced here, not just left as a documentation convention.
+builder.Services.AddAuthorizationBuilder()
+    .AddPolicy("IncidentResponder", policy => policy.RequireRole(Roles.Responder, Roles.Admin));
 
 // Without this, System.Text.Json serializes/expects enums (Severity, IncidentStatus) as raw
 // numbers — technically correct, but "severity": 4 is unreadable over the wire compared to
@@ -30,12 +39,21 @@ builder.Services.AddExceptionHandler<DomainExceptionHandler>();
 builder.Services.AddProblemDetails();
 
 builder.Services.AddEndpointsApiExplorer();
+// A Swagger UI "Authorize" button (paste a JWT, it's sent on every subsequent try-it-out call)
+// is the usual next step here — skipped for now: Swashbuckle 10's SwaggerGen transitively pulls
+// in Microsoft.OpenApi 2.x, which rewrote its whole model namespace (OpenApiSecurityScheme et al.
+// moved/changed shape), and chasing that unfamiliar, freshly-broken API wasn't worth it for a
+// convenience that doesn't affect whether auth actually works — every endpoint below still
+// enforces the same JWT validation and role policy with or without a Swagger button for it.
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
 app.UseExceptionHandler();
 app.UseWebSockets();
+
+app.UseAuthentication();
+app.UseAuthorization();
 
 if (app.Environment.IsDevelopment())
 {
@@ -46,8 +64,18 @@ if (app.Environment.IsDevelopment())
     // CI/CD pipeline step (Phase 17), not as a side effect of the app starting up.
     using var scope = app.Services.CreateScope();
     await scope.ServiceProvider.GetRequiredService<BeaconDbContext>().Database.MigrateAsync();
+
+    // Roles have to exist before anyone can be assigned to one — same "dev convenience, real
+    // deploy does this as a deliberate step" reasoning as the migration above.
+    var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
+    foreach (var role in Roles.All)
+    {
+        if (!await roleManager.RoleExistsAsync(role))
+            await roleManager.CreateAsync(new IdentityRole(role));
+    }
 }
 
+app.MapAuthEndpoints();
 app.MapIncidentEndpoints();
 app.MapAlertEndpoints();
 app.MapTelemetryEndpoints();

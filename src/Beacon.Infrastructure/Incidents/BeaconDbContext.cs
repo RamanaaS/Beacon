@@ -1,9 +1,18 @@
 using Beacon.Domain.Incidents;
+using Beacon.Infrastructure.Auth;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 
 namespace Beacon.Infrastructure.Incidents;
 
-public sealed class BeaconDbContext(DbContextOptions<BeaconDbContext> options) : DbContext(options)
+/// <summary>
+/// IdentityDbContext&lt;ApplicationUser&gt; instead of a separate DbContext for Identity's own
+/// tables (AspNetUsers, AspNetRoles, ...) — one deployable, one schema, one migration history.
+/// A separate identity store/database would be justified by an actual reason to isolate it
+/// (a shared auth service used by other applications, say); nothing here has one yet.
+/// </summary>
+public sealed class BeaconDbContext(DbContextOptions<BeaconDbContext> options)
+    : IdentityDbContext<ApplicationUser>(options)
 {
     public DbSet<Incident> Incidents => Set<Incident>();
 
@@ -14,6 +23,11 @@ public sealed class BeaconDbContext(DbContextOptions<BeaconDbContext> options) :
     /// </summary>
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        // Must run first — this is what configures Identity's own tables. Skipping it (an easy
+        // mistake when you're used to plain DbContext) leaves AspNetUsers/AspNetRoles/etc.
+        // completely unmapped.
+        base.OnModelCreating(modelBuilder);
+
         modelBuilder.Entity<Incident>(entity =>
         {
             entity.ToTable("Incidents");
