@@ -3,6 +3,7 @@ using Beacon.Api.Alerts;
 using Beacon.Api.Auth;
 using Beacon.Api.Common;
 using Beacon.Api.Incidents;
+using Beacon.Api.Status;
 using Beacon.Api.Telemetry;
 using Beacon.Application;
 using Beacon.Infrastructure;
@@ -18,6 +19,11 @@ var builder = WebApplication.CreateBuilder(args);
 // DependencyInjection.cs's own comment for why that handler can't live in Beacon.Application.
 builder.Services.AddApplication(typeof(Program).Assembly);
 builder.Services.AddInfrastructure(builder.Configuration);
+
+// Backs GetPublicStatus's .CacheOutput() (Phase 12) — a real, in-process cache (no Redis needed)
+// for the one endpoint that's explicitly supposed to be cheap to hammer: a public status page
+// with no login wall has no rate limit to lean on the way every authenticated endpoint does.
+builder.Services.AddOutputCache();
 
 builder.Services.AddSingleton<WebSocketConnectionManager>();
 builder.Services.AddHostedService<MetricsSimulatorService>();
@@ -84,6 +90,15 @@ if (app.Environment.IsDevelopment())
 app.UseAuthentication();
 app.UseAuthorization();
 
+// Skipped under the integration-test host: WebApplicationFactory reuses one in-process server
+// (and therefore one output-cache store) across every test in the collection, so a cached
+// /api/status response from an earlier test would make a later "declare, then immediately
+// re-read" assertion flaky. Real dev/production traffic always gets the cache.
+if (!app.Environment.IsEnvironment("Testing"))
+{
+    app.UseOutputCache();
+}
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -109,6 +124,7 @@ app.MapAdminEndpoints();
 app.MapIncidentEndpoints();
 app.MapAlertEndpoints();
 app.MapTelemetryEndpoints();
+app.MapPublicStatusEndpoints();
 app.MapHub<IncidentAlertsHub>("/hubs/incident-alerts");
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }))
