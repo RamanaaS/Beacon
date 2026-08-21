@@ -1206,7 +1206,143 @@ worth remembering exactly because it produces a *timeout*, not a clear assertion
 
 ---
 
-## Next: Phase 11 — Admin Portal (Blazor Server)
+## Phase 11 — Admin Portal (Blazor Server)
+
+**Status: done.** `Beacon.Admin` — a Blazor Server admin portal (login, user/role management,
+an analytics dashboard with a real ApexCharts bar chart, and a live incident ticker fed by a
+server-to-server SignalR connection). Backend additions: a MediatR pub/sub notification
+(`IncidentDeclaredNotification`) published alongside the existing declare-incident command, an
+unauthenticated `IncidentAlertsHub`, and admin-only user/role endpoints. Verified end-to-end with a
+real Playwright browser run — and that run is what actually found three genuine bugs no compiler
+or test suite would have caught.
+
+### Before coding
+
+**Why a third UI stack, not a third React app.** Beacon.WarRoom (Phase 9) is React/MobX,
+Beacon.OnCallConsole (Phase 10) is Electron/vanilla JS. Beacon.Admin is Blazor Server: C# on both
+sides of the wire, server-rendered HTML pushed over a persistent SignalR circuit instead of a JSON
+API consumed by client-side JS. That's a deliberate resume choice — it demonstrates a genuinely
+different execution model (stateful server-side UI, not a stateless API + thin client), which is
+exactly the kind of breadth an interviewer probes for when a candidate claims ".NET full-stack."
+
+**MediatR pub/sub vs. request/response, used deliberately side by side.** Every earlier phase used
+MediatR's `ISender`/`IRequestHandler` for commands and queries — one handler, one response.
+`IncidentDeclaredNotification` is the other half of MediatR: an `INotification` published via
+`IPublisher`, fanned out to *every* registered `INotificationHandler<T>` with no return value. The
+declare-incident use case doesn't know or care that Beacon.Api also happens to broadcast over
+SignalR — `DeclareIncidentCommandHandler` just publishes a fact; `IncidentDeclaredNotificationHandler`
+(living in Beacon.Api, not Application) reacts to it. That separation is the point: the write side
+of the domain stays ignorant of every downstream side effect.
+
+**Applying a known SignalR gotcha *before* it became a bug.** SignalR's Hub protocol serializes
+messages with its own JSON pipeline, entirely separate from `ConfigureHttpJsonOptions` — the exact
+category of bug hit twice already this project (Phase 2's `IncidentId` wrapper-object leak, Phase
+8's missing `[JsonPropertyName]`). `IncidentDeclaredNotificationHandler` sends
+`notification.IncidentId.Value` (a plain `Guid`) and `notification.Severity.ToString()` (a plain
+`string`), not the domain types directly — recognized and fixed proactively by pattern-matching
+against the earlier bugs, not discovered by a failing client.
+
+### During coding — three real bugs, all found by actually running the app
+
+**1. The `--empty` Blazor template scaffold never applied an interactive render mode.**
+`Program.cs` had `.AddInteractiveServerComponents()` and `.AddInteractiveServerRenderMode()` —
+which make interactivity *available*, but nothing opts into it. The full "Blazor Web App" template
+normally stamps `@rendermode="InteractiveServer"` onto `<Routes />` in `App.razor`; the `--empty`
+scaffold used to create this project skips that. Result: every page rendered as static SSR only —
+no SignalR circuit ever connected, so `EditForm`'s submit handler was never wired up as an
+interactive event, and clicking "Log in" fell through to a plain browser HTTP POST, which the
+server rejected outright (`"The POST request does not specify which form is being submitted... add
+a @formname attribute"`). Fixed by adding `@rendermode="InteractiveServer"` to both `<HeadOutlet />`
+and `<Routes />`. A footnote bug inside the fix itself: the first attempt wrote the explanatory
+comment directly above those tags using the literal text `@rendermode`/`@formname` inside an HTML
+`<!-- -->` comment — Razor still parses `@` inside HTML comments, so it tried to treat the comment
+text itself as a directive (`RZ2005`). Fixed by escaping to `@@rendermode` — a real, easy-to-repeat
+trap for anyone writing prose about Razor syntax inside a `.razor` file.
+
+**2. `IHttpClientFactory` message handlers don't share the circuit's DI scope.**
+`AuthorizationMessageHandler` was wired via `.AddHttpMessageHandler<AuthorizationMessageHandler>()`
+on the typed `BeaconApiClient`, and depended on the Scoped `AdminAuthState` to attach the bearer
+token. This is a known, documented Blazor Server pitfall: `IHttpClientFactory` builds and pools its
+message handlers in its *own* internal DI scope (so handlers can be reused across the factory's
+handler-lifetime window), which is a different scope from the one the current circuit resolves
+`AdminAuthState` from. The handler's captured `AdminAuthState` was never the same instance
+`Login.razor` called `SetSession` on — its `Token` was always `null`, no `Authorization` header was
+ever sent, and every admin API call silently 401'd into an unhandled circuit exception (the yellow
+"An unhandled error has occurred" bar). Fixed by removing the message handler entirely and having
+`BeaconApiClient` set `http.DefaultRequestHeaders.Authorization` itself, from an `AdminAuthState`
+injected directly into the typed client (which *does* resolve correctly, since the client itself is
+requested through the circuit's own scope, not the factory's pooled one).
+
+**3. `MainLayout.OnInitializedAsync` runs exactly once per circuit — before login, not after.**
+The live-alerts ticker's `AlertsClient.StartAsync()` call lived in `MainLayout.OnInitializedAsync`,
+gated on `AuthState.IsAuthenticated`. That looks right, but a layout component instance is created
+once per circuit and is *not* re-initialized on later in-app navigation (`RouteView`'s `Body` swaps;
+the surrounding layout persists) — so `OnInitializedAsync` only ever runs during the very first
+render, which happens before the user has logged in. The SignalR connection to
+`IncidentAlertsHub` was therefore never started for the entire lifetime of any session. Fixed by
+also calling `AlertsClient.StartAsync()` from the `AuthState.Changed` event handler, so the
+connection starts the moment login actually flips the auth state, not only at circuit creation.
+
+A fourth, smaller issue surfaced while chasing bug 3: `Analytics.razor`'s `DisposeAsync` called
+`JS.InvokeVoidAsync` unconditionally to clean up the ApexCharts instance, catching only
+`JSDisconnectedException`. If the component is disposed before its first `OnAfterRenderAsync` JS
+call ever ran, the JS runtime throws a *different* exception
+(`InvalidOperationException: "...component is being statically rendered"`) — caught by adding a
+`_rendered` guard so disposal is a no-op when there was never a chart to clean up.
+
+### How it was actually verified
+
+A Playwright script (`verify.mjs`) registers two real users directly against
+`POST /api/auth/register` — Beacon.Admin's login page has no sign-up UI by design (an internal ops
+tool), and registration deliberately lets the caller pick their own role, an explicit demo
+simplification documented on the endpoint itself. It then drives a real Chromium browser: logs in
+through the actual form, confirms the users table renders, changes a *different* user's role
+through the UI and confirms the change round-trips through a separate, independent
+`GET /api/admin/users` call (not just that the UI displayed "Saved"), navigates to `/analytics` and
+asserts a real `<svg>` exists inside the ApexCharts container (not just that the page loaded), then
+declares a brand-new incident through a completely separate API call and confirms the live-alerts
+ticker actually displays that incident's title — proof the SignalR broadcast chain works
+end-to-end, not just that the hub exists.
+
+One test-design detail worth naming: the script originally used `page.goto()` to navigate between
+`/users` and `/analytics`, which immediately broke the session — `AdminAuthState` is Scoped and
+held only in server memory per circuit, with no cookie or localStorage backing it, so a hard
+navigation (a real new HTTP GET) tears down the old circuit and starts a fresh one with no token.
+That's correct, intentional behavior for this app, not a bug to route around in the app itself —
+the fix belongs in the test, which now clicks the in-app nav links instead (Blazor Server's
+"enhanced navigation" intercepts same-origin link clicks and keeps them on the same circuit).
+
+### Common mistakes (and why this phase's code avoids them)
+
+1. **Assuming `AddInteractiveServerComponents()` + `AddInteractiveServerRenderMode()` is enough.**
+   Both only make interactivity *available* at the DI/endpoint level — nothing renders
+   interactively until a component tree actually opts in via `@rendermode`.
+2. **Injecting a Scoped Blazor Server service into anything resolved through
+   `IHttpClientFactory`'s handler pipeline** (`AddHttpMessageHandler<T>()`). The handler is built in
+   the factory's own pooled scope, not the circuit's — any Scoped dependency it captures is silently
+   the wrong instance, with no compiler error and no obvious runtime error pointing at the cause.
+3. **Trusting a layout component's `OnInitializedAsync` to react to state that changes later.** It
+   runs once, for the life of the circuit — anything that depends on state established *after* that
+   first render (like post-login auth) needs its own event subscription, not a one-time check.
+4. **Treating "the Playwright run exited 0" as proof of correctness before actually reading the
+   screenshots and logs.** Every one of the three real bugs above showed up as either a clear
+   assertion failure or a visibly broken screenshot — never a green run with a silent gap.
+
+### Interview questions this phase prepares you for
+
+- Walk through what actually happens, request by request, between a browser loading a Blazor Server
+  page and a button click on that page triggering server-side C# code. Where does static SSR end
+  and the interactive circuit begin?
+- Why can't a `DelegatingHandler` registered via `AddHttpMessageHandler<T>()` safely depend on a
+  Scoped service in a Blazor Server app? What's the actual mechanism, not just "it doesn't work"?
+- MediatR command/query handlers vs. notification handlers — when does a side effect belong in the
+  command handler itself, and when does it belong in a separate `INotificationHandler`?
+- Why does SignalR need its own JSON serialization handling separate from the rest of the API, and
+  what's the concrete failure mode if you forget that and send a domain type directly?
+
+---
+
+## Next: Phase 12 — Public Status Page (ASP.NET Core MVC)
 
 Not started. Still open from earlier phases: Docker's daemon still isn't running (checked again
 this session — unchanged), so Redis-dependent verification (Phase 3's live-Redis test) and any
