@@ -24,6 +24,7 @@ Thumbs.db
 node_modules/
 dist/
 build/
+verify-screenshots/
 
 ## Secrets / local env
 *.env
