@@ -1116,12 +1116,102 @@ an actually-correct UI are different claims.
 
 ---
 
-## Next: Phase 10 — On-Call Console (Electron)
+## Phase 10 — On-Call Console (Electron)
 
-Not started. Still open from earlier phases: once Docker's daemon is actually running and Redis is
-reachable, go back and write the live-Redis integration test Phase 3 left as an explicit open item;
-push this repo's history to GitHub once the account/authentication issue on that end is sorted out;
-if a real Anthropic API key gets configured via user-secrets, do the one remaining live end-to-end
-call Phase 8's code is otherwise fully ready for; and resolve the raw-GUID-actor UX gap this phase
-surfaced (needs a real design decision: denormalize a display name onto domain events at write
-time, or resolve one at read time).
+**Status: done.** `Beacon.OnCallConsole` — plain HTML/JS renderer (no framework; one screen
+doesn't justify React/MobX the way Beacon.WarRoom's several interlocking views do), a proper
+`contextIsolation`/no-`nodeIntegration` main process, a native SQLite offline queue, and native OS
+notifications. Verified with two real, separate Playwright `_electron` runs — one happy-path, one
+that genuinely killed and restarted the backend mid-test to prove the offline queue actually
+recovers, not just that it accepts a queued write.
+
+### Before coding
+
+**Why `node:sqlite`, not `better-sqlite3`.** `better-sqlite3` is a native addon — it needs
+compiling against Electron's specific ABI (via `@electron/rebuild`), which in turn needs a full
+Visual Studio C++ workload. This machine has VS2022 Community *without* that workload, and
+installing a multi-GB workload for one small embedded queue wasn't a good trade. Electron 43
+bundles Node 24, which ships a stable built-in `node:sqlite` — zero native compilation, at the
+cost of a smaller API than `better-sqlite3`'s. The right trade here, not the only possible one.
+
+**Why `contextIsolation: true` and `nodeIntegration: false`, not the simpler legacy pattern.**
+The easy path (`nodeIntegration: true`) lets renderer JS call `require()` directly — convenient,
+and a real security hole: any content that ends up running in that window (a bug that lets a URL
+load unexpectedly, a future feature that renders untrusted text) gets full Node access — the
+filesystem, `child_process`, everything. `preload.js` exposes exactly six functions via
+`contextBridge.exposeInMainWorld`; that's the renderer's entire reachable surface, deliberately,
+the same "narrow the trust boundary" instinct as Phase 7's claims-derived identity.
+
+**The optimistic-write design for the offline queue.** `beacon:acknowledge`/`beacon:escalate`
+try the real API call *first* and only fall back to queuing on failure — not "always queue, sync
+later." The common case on a real on-call console is a working connection; a UI that always shows
+"queued, will send" would be misleading almost all the time. Queuing is the exception path, not
+the default path.
+
+### During coding — one real environment gotcha, not an app bug
+
+Both the raw `electron.cmd` binary and Playwright's `_electron.launch()` failed with confusing
+errors on the first attempt — `ipcMain` came back `undefined` when destructured from
+`require("electron")`. Not a bug in `main.js`: `ELECTRON_RUN_AS_NODE=1` is set globally in this
+sandboxed shell (almost certainly to stop agent tooling from accidentally spawning GUI windows),
+which makes any Electron binary run as plain Node instead of the real app framework — so
+`require("electron")` returns a path string, not the API object. Fixed by explicitly clearing that
+one variable for the verification launches only (`delete launchEnv.ELECTRON_RUN_AS_NODE` before
+`electron.launch()`), not by hunting for a code-level cause that didn't exist.
+
+### How the offline queue actually got verified
+
+Not simulated — two cooperating processes, coordinated for real: `verify-offline.mjs` logs in
+while the API is up, then polls `/health` waiting for it to go down; a *separate* tool call kills
+the real `dotnet run` backend process while the script is mid-wait; the script detects the outage,
+clicks Acknowledge, and confirms the `.queued-note` actually appears and `node:sqlite`'s queue
+depth reads 1. The backend is then genuinely restarted, and — this is the part that matters —
+the check that mattered most wasn't in the Electron window at all: a completely separate
+`Invoke-RestMethod` call, using a freshly-registered throwaway user, queried
+`GET /api/incidents` directly and confirmed the incident's status was really `Acknowledged` in
+the database. That's the actual proof the queue → retry → real API chain works, not just that the
+UI's queued-indicator toggled.
+
+One test-script bug surfaced along the way and is worth naming: the first version asserted
+`waitForSelector("#queue-indicator.hidden")`, which can never pass — Playwright's `waitForSelector`
+defaults to `state: "visible"`, and an element carrying a `hidden` class is by definition never
+visible. The fix was polling the element's `class` attribute directly instead of asking Playwright
+to wait for visibility of something deliberately invisible — a real, easy mistake to make once,
+worth remembering exactly because it produces a *timeout*, not a clear assertion failure.
+
+### Common mistakes (and why this phase's code avoids them)
+
+1. **`nodeIntegration: true` "just to get something working quickly."** It works, and it's a real
+   security regression the moment anything not fully trusted ever renders in that window.
+2. **Assuming a native npm module will "just work" in Electron the way it does in plain Node.**
+   Different ABI, different toolchain requirements — checked before committing to a dependency,
+   not discovered after a confusing runtime crash.
+3. **Testing "does the queue accept a write" instead of "does the write eventually really reach
+   the server."** The first is a much weaker claim — this phase's verification deliberately checks
+   the second, from a source (a fresh, unrelated API call) that can't be fooled by anything the
+   Electron app itself might get wrong.
+
+### Interview questions this phase prepares you for
+
+- What does `contextIsolation` + `contextBridge` actually protect against, concretely — walk
+  through what a malicious or buggy renderer *could* do with `nodeIntegration: true` that it can't
+  do here.
+- Why optimistic-write-then-queue-on-failure instead of always queuing and syncing on an interval?
+  What's the actual UX cost of the alternative?
+- What's the real difference between "the offline queue accepted the action" and "the offline
+  queue's contents eventually reached the server" as claims — and why does only the second one
+  actually matter?
+- Native Node addons vs. built-in modules like `node:sqlite` — what's the actual trade-off, and
+  when would you reach for the native addon anyway despite the extra build complexity?
+
+---
+
+## Next: Phase 11 — Admin Portal (Blazor Server)
+
+Not started. Still open from earlier phases: Docker's daemon still isn't running (checked again
+this session — unchanged), so Redis-dependent verification (Phase 3's live-Redis test) and any
+Docker/Testcontainers-dependent phase stay blocked on that; push this repo's history to GitHub once
+the account/authentication issue on that end is sorted out; if a real Anthropic API key gets
+configured via user-secrets, do the one remaining live end-to-end call Phase 8's code is otherwise
+ready for; and the raw-GUID-actor UX gap from Phase 9 is still open (needs a real design decision,
+not a quick patch).
