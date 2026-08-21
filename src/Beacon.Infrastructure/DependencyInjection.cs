@@ -43,8 +43,43 @@ public static class DependencyInjection
 
         services.AddAuthInfrastructure(configuration);
         services.AddClaudeIntegration(configuration);
+        services.AddItsmBridgeIntegration(configuration);
 
         return services;
+    }
+
+    private static void AddItsmBridgeIntegration(this IServiceCollection services, IConfiguration configuration)
+    {
+        var itsmSettings = configuration.GetSection("ItsmBridge").Get<ItsmBridgeSettings>() ?? new ItsmBridgeSettings();
+
+        // Same resilience approach as AddClaudeIntegration (ARCHITECTURE.md Table B names both
+        // calls explicitly), but with the defaults tightened way down. AddStandardResilienceHandler
+        // ships defaults sized for a genuine third-party API (multiple retries with backoff, a
+        // ~30s total timeout) — measured against this project's own itsm-bridge simply not running
+        // in local dev, that turned the full integration-test suite from ~20s to over 6 minutes,
+        // every declare/resolve call quietly paying the full retry budget before
+        // ItsmTicketSyncHandler's catch block ever got a chance to swallow the failure.
+        // itsm-bridge is a same-network internal service, not a dependency worth retrying hard for.
+        services.AddHttpClient<IItsmBridgeClient, ItsmBridgeClient>(client =>
+            {
+                client.BaseAddress = new Uri(itsmSettings.BaseUrl);
+            })
+            .AddStandardResilienceHandler(options =>
+            {
+                options.Retry.MaxRetryAttempts = 1;
+                options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(1);
+                options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(3);
+
+                // The library defaults (FailureRatio 0.1 over MinimumThroughput 100 samples) never
+                // trip at this call volume — every single request would keep paying the full retry
+                // + timeout cost independently instead of the circuit ever actually opening. Same
+                // "two failures is enough to know it's down" reasoning as RedisRecentAlertsStore's
+                // breaker earlier this phase.
+                options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(2);
+                options.CircuitBreaker.MinimumThroughput = 2;
+                options.CircuitBreaker.FailureRatio = 1.0;
+                options.CircuitBreaker.BreakDuration = TimeSpan.FromSeconds(30);
+            });
     }
 
     private static void AddClaudeIntegration(this IServiceCollection services, IConfiguration configuration)

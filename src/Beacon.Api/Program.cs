@@ -17,7 +17,9 @@ var builder = WebApplication.CreateBuilder(args);
 // typeof(Program).Assembly added to the scan so MediatR also discovers notification handlers
 // that live in Beacon.Api itself (IncidentDeclaredNotificationHandler bridges to SignalR) — see
 // DependencyInjection.cs's own comment for why that handler can't live in Beacon.Application.
-builder.Services.AddApplication(typeof(Program).Assembly);
+// Beacon.Infrastructure's own assembly is added for the same reason: ItsmTicketSyncHandler
+// (Phase 13) needs IItsmBridgeClient, an Infrastructure-owned implementation.
+builder.Services.AddApplication(typeof(Program).Assembly, typeof(Beacon.Infrastructure.DependencyInjection).Assembly);
 builder.Services.AddInfrastructure(builder.Configuration);
 
 // Backs GetPublicStatus's .CacheOutput() (Phase 12) — a real, in-process cache (no Redis needed)

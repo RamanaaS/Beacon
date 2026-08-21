@@ -29,6 +29,17 @@ build/
 verify-screenshots/
 !**/wwwroot/lib/**
 
+## Java (itsm-bridge)
+target/
+.mvn/wrapper/maven-wrapper.jar
+
+## Python (alert-simulator) — native/log-parser-shim's dist/ is deliberately NOT here: that build
+## output (a tiny native DLL/exe from build.ps1) is committed on purpose so the solution builds
+## out of the box after a fresh clone without requiring gcc to be installed first.
+.venv/
+__pycache__/
+*.pyc
+
 ## Secrets / local env
 *.env
 appsettings.*.local.json

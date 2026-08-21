@@ -6,7 +6,7 @@ namespace Beacon.Application.Incidents;
 
 public sealed record ResolveIncidentCommand(IncidentId IncidentId, string UserId, string Summary) : IRequest;
 
-public sealed class ResolveIncidentCommandHandler(IIncidentRepository repository, IClock clock)
+public sealed class ResolveIncidentCommandHandler(IIncidentRepository repository, IClock clock, IPublisher publisher)
     : IRequestHandler<ResolveIncidentCommand>
 {
     public async Task Handle(ResolveIncidentCommand request, CancellationToken cancellationToken)
@@ -17,5 +17,7 @@ public sealed class ResolveIncidentCommandHandler(IIncidentRepository repository
         incident.Resolve(request.UserId, request.Summary, clock.UtcNow);
 
         await repository.SaveChangesAsync(cancellationToken);
+
+        await publisher.Publish(new IncidentResolvedNotification(incident.Id), cancellationToken);
     }
 }
