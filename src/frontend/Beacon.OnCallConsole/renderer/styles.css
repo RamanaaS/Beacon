@@ -1,0 +1,82 @@
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: 14px/1.5 system-ui, "Segoe UI", Roboto, sans-serif;
+  background: #f7f8fa;
+  color: #1f2430;
+}
+
+.hidden { display: none !important; }
+.muted { color: #6b7280; text-align: center; padding: 24px; }
+.error { color: #dc2626; font-size: 13px; }
+
+#login-view {
+  max-width: 320px;
+  margin: 60px auto;
+  padding: 24px;
+  background: #fff;
+  border: 1px solid #e2e5e9;
+  border-radius: 10px;
+  text-align: center;
+}
+
+.tagline { color: #6b7280; margin-bottom: 20px; }
+
+#login-form { display: flex; flex-direction: column; gap: 12px; text-align: left; }
+
+label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #6b7280; }
+
+input, button {
+  font: inherit;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid #e2e5e9;
+}
+
+button {
+  background: #4f46e5;
+  color: #fff;
+  border-color: #4f46e5;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: #fff;
+  color: #4f46e5;
+}
+
+button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  background: #fff;
+  border-bottom: 1px solid #e2e5e9;
+}
+
+header h1 { font-size: 18px; margin: 0; }
+
+#queue-indicator { font-size: 12px; color: #d97706; }
+
+#incident-list { list-style: none; margin: 0; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+
+.incident {
+  background: #fff;
+  border: 1px solid #e2e5e9;
+  border-left: 3px solid #9ca3af;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.incident.severity-sev1_critical { border-left-color: #dc2626; }
+.incident.severity-sev2_high { border-left-color: #d97706; }
+
+.incident-title { font-weight: 600; }
+.incident-meta { font-size: 12px; color: #6b7280; margin: 4px 0 8px; }
+.incident-actions { display: flex; gap: 8px; }
+.incident-actions button { padding: 5px 10px; font-size: 12px; }
+
+.queued-note { margin-top: 8px; font-size: 11px; color: #d97706; }

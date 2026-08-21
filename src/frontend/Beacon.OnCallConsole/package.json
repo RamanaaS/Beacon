@@ -1,0 +1,20 @@
+{
+  "name": "beacon.oncallconsole",
+  "version": "1.0.0",
+  "description": "Beacon on-call console — desktop app for acknowledging/escalating incidents with native notifications and an offline action queue.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "axios": "^1.19.0"
+  },
+  "devDependencies": {
+    "electron": "^43.4.1",
+    "playwright": "^1.62.1"
+  }
+}

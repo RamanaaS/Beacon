@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Beacon On-Call Console</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="login-view">
+    <h1>Beacon</h1>
+    <p class="tagline">On-Call Console</p>
+    <form id="login-form">
+      <label>Email <input type="email" id="email" required /></label>
+      <label>Password <input type="password" id="password" required /></label>
+      <p id="login-error" class="error hidden"></p>
+      <button type="submit">Log in</button>
+    </form>
+  </div>
+
+  <div id="dashboard-view" class="hidden">
+    <header>
+      <h1>On-Call</h1>
+      <span id="queue-indicator" class="hidden">● <span id="queue-count">0</span> queued offline</span>
+    </header>
+    <ul id="incident-list"></ul>
+    <p id="empty-state" class="muted hidden">No open incidents. All clear.</p>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
