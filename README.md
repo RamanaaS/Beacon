@@ -6,13 +6,14 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design, skill mapping, and p
 
 ## Status
 
-**Phase 11 done.** Full incident lifecycle (declare/acknowledge/resolve/escalate) behind JWT auth
+**Phase 12 done.** Full incident lifecycle (declare/acknowledge/resolve/escalate) behind JWT auth
 and role-based authorization, CQRS-orchestrated, Excel/PDF/AI-postmortem reporting, live WebSocket
-telemetry, a MediatR pub/sub bridge to SignalR for real-time incident broadcasts, and three separate
+telemetry, a MediatR pub/sub bridge to SignalR for real-time incident broadcasts, and four separate
 frontends against the same API: a React + MobX war-room dashboard (`Beacon.WarRoom`), an Electron
-on-call console with an offline write queue (`Beacon.OnCallConsole`), and a Blazor Server admin
-portal for user/role management and analytics (`Beacon.Admin`). 62/62 backend tests passing, plus
-Playwright-verified end-to-end browser runs of all three frontends.
+on-call console with an offline write queue (`Beacon.OnCallConsole`), a Blazor Server admin portal
+for user/role management and analytics (`Beacon.Admin`), and a public, unauthenticated, cached
+ASP.NET Core MVC status page (`Beacon.StatusPage`). 73/73 backend tests passing, plus
+Playwright-verified end-to-end browser runs of all four frontends.
 See [LEARNING_GUIDE.md](LEARNING_GUIDE.md) for what each phase teaches, concept by concept.
 
 ## Prerequisites
@@ -49,6 +50,11 @@ dotnet run --urls "http://localhost:5121"
 cd ..\..\src\frontend\Beacon.OnCallConsole
 npm install
 npm start
+
+# Run the public status page (separate terminal)
+cd ..\..\src\Beacon.StatusPage
+dotnet run --urls "http://localhost:5146"
+# http://localhost:5146 — no login needed
 ```
 
 ## Running the tests

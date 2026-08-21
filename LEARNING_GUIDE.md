@@ -1342,13 +1342,18 @@ the fix belongs in the test, which now clicks the in-app nav links instead (Blaz
 
 ---
 
-## Phase 12 — Public Status Page (backend done, frontend not started)
+## Phase 12 — Public Status Page (ASP.NET Core MVC)
 
-**Status: partial — backend done and tested, `Beacon.StatusPage` (ASP.NET Core MVC) not yet built.**
-Stopped here deliberately at a clean, fully-committed point rather than leaving a half-scaffolded
-new project sitting uncommitted.
+**Status: done.** `Beacon.StatusPage` — a small, unauthenticated ASP.NET Core MVC app (the
+project's one deliberately non-SPA frontend) rendering an overall status banner, the monitored
+component list, active incidents, and a 30-day uptime history, all fed by the new
+`GET /api/status` endpoint. Verified live: declared a real incident, watched the banner and feed
+actually change after the output cache expired, resolved it, watched them change back — and
+confirmed the page degrades to a coherent fallback (not a 500) when Beacon.Api is unreachable.
 
-### What's done
+### Backend
+
+`GET /api/status` — unauthenticated, output-cached (15s). `GetPublicStatusQuery`/`Handler`
 
 `GET /api/status` — unauthenticated, output-cached (15s). `GetPublicStatusQuery`/`Handler`
 (`Beacon.Application/Incidents/GetPublicStatus.cs`) computes three real things, not placeholders:
@@ -1383,20 +1388,71 @@ optimization for deterministic reads, an explicit, narrow exception, not caching
 
 73/73 backend tests passing (47 unit + 26 integration).
 
-### What's next
+### Frontend: why MVC survives as the right call here, not just resume-box-ticking
 
-Build `Beacon.StatusPage` — a small ASP.NET Core MVC project (per ARCHITECTURE.md's own Table C
-reasoning: a public, cacheable, no-login page is genuinely MVC/Razor's strongest fit, not a SPA-by-
-default reflex), one controller calling `GET /api/status` server-to-server (same pattern as
-`Beacon.Admin`'s `BeaconApiClient`, no CORS needed), one Index view rendering the status banner,
-component list, active-incident feed, and a 30-cell uptime strip, with a simple `<meta refresh>` or
-small polling script for live updates (no SignalR here — that would cut against the same "server-
-rendered, not SPA" reasoning the project chose MVC for in the first place). Then verify with a real
-Playwright browser run before calling the phase done, same discipline as every frontend phase so far.
+Every other frontend in this project (Phases 9-11) is either a SPA or a persistent-connection app.
+A public status page is the one case where ARCHITECTURE.md's own Table C reasoning actually bites:
+no login, cacheable, nothing that needs client-side state management or a live socket — Razor
+rendering plain server-side HTML on every request (or every cached-request-window) is *simpler*
+than shipping a JS bundle for this, not a legacy fallback. `HomeController.Index` calls
+`BeaconStatusClient` (server-to-server, same no-CORS-needed reasoning as `Beacon.Admin`'s client)
+and passes a `StatusPageViewModel` to one `Index.cshtml`. A `<meta http-equiv="refresh" content="30">`
+does the "live" part — deliberately not SignalR, which would have quietly reintroduced the exact
+SPA-shaped complexity choosing MVC was meant to avoid.
+
+**The one piece of real design work in this phase: what happens when Beacon.Api is down.** A status
+page's whole reason to exist is to still say something coherent during an incident — the exact
+moment its usual data source (the same API the incident is probably about) is most likely to be
+unreachable. `HomeController.Index` catches `HttpRequestException`/`TaskCanceledException`
+specifically (a 5-second `HttpClient.Timeout` keeps a hung backend from hanging the status page
+too) and renders a distinct `StatusPageViewModel.Unavailable()` view state — a neutral "temporarily
+unavailable" message, not a stack trace, not a blank page. This was actually verified, not just
+written and trusted: killed the running API process, reloaded the page, confirmed the fallback
+banner rendered instead of a 500.
+
+### How it was verified
+
+`verify.mjs` registers a Responder, then — deliberately not assuming a clean "Operational"
+baseline, since the shared dev database already carries unresolved incidents from every earlier
+phase's own verification runs — declares one distinctly-titled Sev1 incident, waits out the real
+15-second output cache (not a shortcut around it), reloads, and confirms both the "Major Outage"
+banner and the new incident's title actually appear. Then resolves that one incident, waits out the
+cache again, and confirms it specifically disappears from the feed (while the genuinely-still-open
+leftover incidents from earlier phases correctly remain, both in the list and reflected in the
+still-red banner) — proof the page reflects real, current state, not a fixture. The 30-day uptime
+strip was checked visually too: a full-page screenshot showed green cells before the dates of the
+earliest still-open leftover incidents and red cells from those incidents' declared dates through
+today, which is the actual, correct signal — not asserted as a green/red count without looking.
+
+### Common mistakes (and why this phase's code avoids them)
+
+1. **Assuming a fresh dev database in a test/verification script.** Every earlier phase's
+   verification runs left real incidents behind. A script that asserts "no active incidents" or
+   "Operational" as a starting condition will pass once and then mysteriously fail forever after —
+   this phase's script instead asserts on one incident it declares and controls, ignoring the rest.
+2. **Letting a status page depend on the exact system it reports on staying up.** Without the
+   explicit try/catch and a bounded `HttpClient.Timeout`, a Beacon.Api outage would take the status
+   page down with it — precisely backwards from what a status page is for.
+3. **Reaching for SignalR/a SPA out of habit "for live updates."** A public, no-login, cacheable
+   page has a much simpler tool that actually fits: a short cache TTL plus a `<meta refresh>`. The
+   reflex to add a persistent connection everywhere is worth resisting when the actual requirements
+   don't call for one.
+
+### Interview questions this phase prepares you for
+
+- Why is a public status page usually built with the *simplest* stack in a system, not the most
+  sophisticated one — and what's the concrete failure mode of getting that backwards?
+- How would you design a status page's data path so that a real outage in the backend it's
+  reporting on doesn't also take the status page down?
+- What's the actual tradeoff `OutputCache`/short TTL caching makes here — and why does a public,
+  anonymous, high-read endpoint benefit from it in a way an authenticated, per-user endpoint
+  usually doesn't?
+- Walk through why deriving "component health" from unauthenticated incident data would need a
+  data-model change most systems don't have on day one — what would you actually add, and where?
 
 ---
 
-## Next: Phase 12 (continued) — Beacon.StatusPage frontend, then Phase 13 — Polyglot pieces
+## Next: Phase 13 — Polyglot pieces (Java `itsm-bridge`, C/C++ `log-parser-shim`, Python `alert-simulator`)
 
 Still open from earlier phases: Docker's daemon still isn't running (checked again this session —
 unchanged), so Redis-dependent verification (Phase 3's live-Redis test) and any
@@ -1404,7 +1460,7 @@ Docker/Testcontainers-dependent phase stay blocked on that; **GitHub push is sti
 `git push` failed this session with "Repository not found" against
 `https://github.com/RamanaaS/Beacon.git`, so despite `git status` reporting "up to date with
 origin/main" (a stale/cached tracking ref, not proof of a successful push), the account-mismatch
-issue in GitHub Desktop is evidently still unresolved and every commit through Phase 12's backend
-remains local-only; if a real Anthropic API key gets configured via user-secrets, do the one
-remaining live end-to-end call Phase 8's code is otherwise ready for; and the raw-GUID-actor UX gap
-from Phase 9 is still open (needs a real design decision, not a quick patch).
+issue in GitHub Desktop is evidently still unresolved and every commit remains local-only; if a
+real Anthropic API key gets configured via user-secrets, do the one remaining live end-to-end call
+Phase 8's code is otherwise ready for; and the raw-GUID-actor UX gap from Phase 9 is still open
+(needs a real design decision, not a quick patch).
