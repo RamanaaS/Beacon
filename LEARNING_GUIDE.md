@@ -1452,12 +1452,153 @@ today, which is the actual, correct signal — not asserted as a green/red count
 
 ---
 
-## Next: Phase 13 — Polyglot pieces (Java `itsm-bridge`, C/C++ `log-parser-shim`, Python `alert-simulator`)
+## Phase 13 — Polyglot pieces (Java `itsm-bridge`, C `log-parser-shim`, Python `alert-simulator`)
+
+**Status: done.** All three, wired into the real incident/alert flow, not standalone demos: a
+Java Spring Boot service simulating a legacy ITSM ticketing system (the one deliberate service
+boundary in this project), a native C library parsing raw alert lines on the ingestion path
+(P/Invoke-wrapped), and a Python CLI that fires synthetic alert traffic at the real running API.
+This phase's real headline, though, is two separate resilience bugs it forced into the open —
+one pre-existing, one self-inflicted — both found by actually running things, not by writing code
+and trusting it.
+
+### `itsm-bridge` — Java Spring Boot 4, the one deliberate service boundary
+
+In-memory ticket store (`ConcurrentHashMap`, deliberately — itsm-bridge exists to demonstrate the
+integration pattern, not to be a real datastore), `POST /tickets` to open one, `PUT
+/tickets/by-incident/{incidentId}/status` to close one. Two design points worth naming:
+
+- **Idempotent creation, keyed by Beacon's own incidentId.** Beacon's own Polly retry policy
+  (below) means "create a ticket for incident X" can genuinely arrive at itsm-bridge twice — a
+  legacy system silently opening a duplicate ticket per retry is exactly the kind of bug that
+  quietly erodes trust in an integration. `TicketService` tracks `incidentId -> ticketId` and
+  returns the existing ticket on a repeat create instead of making a new one.
+- **Lookup-by-incidentId for status updates**, not by itsm-bridge's own generated ticket id.
+  Beacon never learns that id after creation — it doesn't need to, and remembering a second
+  system's identifiers just to look something up later is exactly the kind of coupling a bridge
+  service should absorb, not pass through.
+
+**Spring Boot 4 / Jackson 3 was a genuinely different, newer stack than expected**, and it broke
+in ways worth naming since neither is obviously documented yet: Jackson's package namespace moved
+from `com.fasterxml.jackson.*` to `tools.jackson.*` for its 3.x major version (`ObjectMapper` now
+lives at `tools.jackson.databind.ObjectMapper`), and `TestRestTemplate` is gone entirely in favor
+of a new `RestTestClient` — rather than chase an unfamiliar brand-new fluent API, the test suite
+was written against `MockMvc` instead (whose own autoconfigure annotation also moved, to
+`org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc`). Also: Spring Boot 4
+splits Jackson out of the web starter into its own module (`spring-boot-starter-jackson`) instead
+of pulling it in transitively the way earlier versions did — without it, nothing serializes.
+8/8 tests passing (MockMvc), plus a live smoke test (curl-equivalent create/idempotent-recreate/
+close/lookup-by-incident) against the actually-running service before ever wiring the .NET side.
+
+### `log-parser-shim` — C, P/Invoke, and a real bug the tests caught before it shipped
+
+A single-pass, allocation-free parser for one pipe-delimited raw alert line format
+(`severity|source|alert_name|instance|message`), sitting behind a new
+`POST /api/alerts/ingest-raw` endpoint — standing in for the real reason tools like Fluent Bit and
+Vector keep their hot log-parsing path native: avoiding .NET's Regex/string-split allocation
+overhead at line rate. The throughput case isn't asserted, it's measured: `test_log_parser.c`'s
+benchmark clocks ~22 million lines/sec single-threaded on this dev machine.
+
+That same test file caught a real, easy-to-miss bug before any of this reached C#: the message
+field's length was originally computed as `cursor - field_start` after the delimiter-scanning
+loop — but the loop exits the instant it finds the 4th pipe, which happens exactly when `cursor`
+and `field_start` are already equal (both pointing at the first character of the message). That
+computed a length of zero every time, silently truncating every message to an empty string. Fixed
+with `strlen(field_start)`, which is correct regardless of *why* the loop stopped — a good example
+of a bug that unit tests exist specifically to catch, since it's invisible from reading the happy
+path and only shows up by actually running a real input through it.
+
+The P/Invoke wrapper (`Beacon.Infrastructure/Alerts/LogParserShim.cs`) marshals a fixed-size
+struct across the boundary rather than returning native-owned pointers — the .NET side owns the
+memory the whole time, so there's no cross-boundary `free()` to get wrong, at the cost of one
+struct copy per call (a fine trade at this data size). Windows-only for now (MinGW/gcc build),
+same documented, deliberate limitation as Phase 6's `WindowsFontResolver` — the built `dist/`
+output is committed to source control on purpose, so the solution builds without requiring gcc to
+be installed, with `build.ps1` provided to regenerate it.
+
+### `alert-simulator` — Python, and an honest reckoning with Redis actually being down
+
+Fires synthetic alert bursts at either ingestion endpoint. `--dedup-demo` fires one fingerprint 8
+times and checks it collapses to exactly one incident — and the very first live run against this
+machine's genuinely-unreachable Redis immediately surfaced something real and worth naming
+explicitly rather than silently working around: with Redis down, *every* alert came back "New,"
+zero "Duplicate," because `RedisRecentAlertsStore.GetRecentAsync` fails open (returns "no recent
+alerts" rather than erroring) — a deliberate design choice from earlier this phase, and dedup
+simply cannot function without it working. The tool now recognizes that exact 8-New/0-Duplicate
+signature and reports it as an explicit, understood state ("this is what Redis-down degradation
+looks like, not a bug — re-run against a reachable Redis to see real dedup"), rather than a bare,
+confusing failure that looks like something broke.
+
+### Two resilience bugs, found by actually running things
+
+**1. RedisRecentAlertsStore was still effectively broken under a down Redis, just not the way it
+looked.** `abortConnect=false` (set back in Phase 3) only keeps the *initial* `Connect()` call
+from throwing — it does nothing for individual commands issued against a still-disconnected
+multiplexer, which throw `RedisConnectionException` on every single call. A real timed request
+against this machine's actually-down Redis took **11.5 seconds** — survivable in the sense that it
+eventually returned 200, but not in any sense that matters for a tool whose whole job is being
+fast during an active incident. Fixed with a Polly circuit breaker (`ResiliencePipelineBuilder`
++ `AddCircuitBreaker`, `MinimumThroughput: 2`, `BreakDuration: 30s`) plus tightened connection
+string timeouts (`connectTimeout=1000,syncTimeout=1000`): the first one or two requests still pay
+the real cost of discovering Redis is down, and every request after that fails in single-digit
+milliseconds until the breaker's cooldown expires. This is now the first genuinely-verified
+Redis-*unreachable* behavior in this project — Phase 3 could only claim "the app doesn't crash";
+this phase actually timed it, found it unacceptable, and fixed it. (Live-Redis-*reachable*
+verification is still the one item still blocked on Docker.)
+
+**2. The exact same class of bug, self-inflicted this time.** Wiring `ItsmBridgeClient` through
+`AddStandardResilienceHandler()`'s untouched defaults — sized for a real third-party API, with
+multiple retries and a ~30-second total budget — took the entire integration test suite from
+~20 seconds to **over 6 minutes**, because every incident declare/resolve call in the suite quietly
+paid the full retry budget against a same-network service that simply isn't running in this dev
+environment. Fixed the same way as Redis: a tightened `MaxRetryAttempts`/`AttemptTimeout`/
+`TotalRequestTimeout`, plus the identical `MinimumThroughput: 2` circuit-breaker tuning. The
+second bug existing at all is itself worth sitting with: recognizing a pattern in the abstract
+("circuit breakers need real tuning, not library defaults") didn't stop it from being written
+twice in one phase — it only meant the second one got *found and fixed* fast, by timing things
+again rather than assuming success from a passing test suite that (correctly) never asserted on
+latency in the first place.
+
+`ItsmTicketSyncHandler` applies the lesson a third time, proactively: it catches its own failures
+so a downed itsm-bridge can never fail an incident declare/resolve whose `SaveChangesAsync` has
+already committed — the exact shape of bug `RedisRecentAlertsStore` had before this phase started,
+prevented here before it ever shipped instead of discovered after.
+
+79/79 backend tests passing (47 unit + 32 integration, ~18s). 8/8 Java tests passing.
+
+### Common mistakes (and why this phase's code avoids them)
+
+1. **Trusting a passing test suite to mean "fast enough."** All 79 backend tests passed the entire
+   time both resilience bugs were live — correctness and latency are different claims, and only
+   one of them shows up in a green checkmark.
+2. **Assuming a resilience library's defaults are right for your actual dependency.** Retry counts
+   and timeouts tuned for a flaky third-party API are actively harmful against a same-network
+   service that's either up or simply not running — "resilient" isn't one setting, it depends on
+   what failure mode you're actually defending against.
+3. **A test/demo tool asserting one specific outcome when the environment can legitimately produce
+   a different, equally correct one.** `alert-simulator --dedup-demo` failing outright against a
+   down Redis would look like a bug in either the tool or Beacon; recognizing and naming the
+   Redis-down signature turns the same result into useful information instead.
+
+### Interview questions this phase prepares you for
+
+- Walk through exactly why `abortConnect=false` doesn't mean "a disconnected Redis client fails
+  fast" — what specifically keeps retrying, and on what schedule?
+- Why does a circuit breaker need a `MinimumThroughput` above 1 at all — what statistical claim is
+  a `FailureRatio` even making with only one sample?
+- When should a downstream integration's failure be allowed to fail the request that triggered it,
+  versus being caught and logged? What decided that for `ItsmTicketSyncHandler` specifically?
+- What's the actual cost/benefit of writing native code (C, P/Invoke) into a path that could be
+  plain C#, and how would you *prove* the throughput claim instead of just asserting it?
+
+---
+
+## Next: Phase 14 — Testing formalization (Testcontainers)
 
 Still open from earlier phases: Docker's daemon still isn't running (checked again this session —
-unchanged), so Redis-dependent verification (Phase 3's live-Redis test) and any
-Docker/Testcontainers-dependent phase stay blocked on that; **GitHub push is still blocked** —
-`git push` failed this session with "Repository not found" against
+unchanged), so Testcontainers (this phase, needs a real Docker daemon to spin up disposable
+containers) and Phase 15's Docker/.NET Aspire work stay blocked on that; **GitHub push is still
+blocked** — `git push` failed this session with "Repository not found" against
 `https://github.com/RamanaaS/Beacon.git`, so despite `git status` reporting "up to date with
 origin/main" (a stale/cached tracking ref, not proof of a successful push), the account-mismatch
 issue in GitHub Desktop is evidently still unresolved and every commit remains local-only; if a
