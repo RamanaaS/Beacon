@@ -1,0 +1,78 @@
+@inherits LayoutComponentBase
+@inject AdminAuthState AuthState
+@inject IncidentAlertsClient AlertsClient
+@inject NavigationManager Nav
+@implements IDisposable
+
+<nav class="navbar navbar-expand navbar-dark bg-dark px-3">
+    <a class="navbar-brand" href="/">Beacon Admin</a>
+    @if (AuthState.IsAuthenticated)
+    {
+        <div class="navbar-nav me-auto">
+            <a class="nav-link" href="/users">Users</a>
+            <a class="nav-link" href="/analytics">Analytics</a>
+        </div>
+        <div class="d-flex align-items-center text-light">
+            <span class="me-3 small">@AuthState.Email (@string.Join(", ", AuthState.Roles))</span>
+            <button class="btn btn-sm btn-outline-light" @onclick="Logout">Log out</button>
+        </div>
+    }
+</nav>
+
+@if (AuthState.IsAuthenticated && AlertsClient.RecentAlerts.Count > 0)
+{
+    <div class="alert-ticker bg-warning-subtle border-bottom px-3 py-2">
+        <strong>Live:</strong>
+        @foreach (var alert in AlertsClient.RecentAlerts.Take(3))
+        {
+            <span class="badge text-bg-dark ms-2">@alert.Severity</span>
+            <span class="ms-1 me-3">@alert.Title</span>
+        }
+    </div>
+}
+
+<main class="container-fluid py-4">
+    @Body
+</main>
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unhandled error has occurred.
+    <a href="." class="reload">Reload</a>
+    <span class="dismiss">🗙</span>
+</div>
+
+@code {
+    protected override async Task OnInitializedAsync()
+    {
+        AuthState.Changed += AuthChangedHandler;
+        AlertsClient.AlertReceived += StateHasChangedHandler;
+
+        if (AuthState.IsAuthenticated)
+            await AlertsClient.StartAsync();
+    }
+
+    private void StateHasChangedHandler() => InvokeAsync(StateHasChanged);
+
+    // MainLayout is created once per circuit and never re-initialized on later in-app navigation
+    // (only RouteView's Body swaps; the layout instance persists) — so OnInitializedAsync's own
+    // AlertsClient.StartAsync() call above only ever sees the pre-login, unauthenticated state.
+    // The connection has to be (re-)started here instead, once login actually flips AuthState.
+    private void AuthChangedHandler() => InvokeAsync(async () =>
+    {
+        if (AuthState.IsAuthenticated)
+            await AlertsClient.StartAsync();
+        StateHasChanged();
+    });
+
+    private void Logout()
+    {
+        AuthState.Clear();
+        Nav.NavigateTo("/login", forceLoad: false);
+    }
+
+    public void Dispose()
+    {
+        AuthState.Changed -= AuthChangedHandler;
+        AlertsClient.AlertReceived -= StateHasChangedHandler;
+    }
+}

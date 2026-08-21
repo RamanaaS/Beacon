@@ -1,0 +1,64 @@
+@page "/login"
+@inject BeaconApiClient Api
+@inject AdminAuthState AuthState
+@inject NavigationManager Nav
+
+<div class="d-flex justify-content-center">
+    <div class="card mt-5" style="max-width: 360px; width: 100%;">
+        <div class="card-body">
+            <h1 class="h4 mb-1">Beacon Admin</h1>
+            <p class="text-muted small mb-4">Runbook, escalation, and user administration</p>
+
+            <EditForm Model="_form" OnValidSubmit="HandleLogin">
+                <div class="mb-3">
+                    <label class="form-label">Email</label>
+                    <InputText class="form-control" @bind-Value="_form.Email" />
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Password</label>
+                    <InputText type="password" class="form-control" @bind-Value="_form.Password" />
+                </div>
+
+                @if (_error is not null)
+                {
+                    <div class="alert alert-danger py-2">@_error</div>
+                }
+
+                <button type="submit" class="btn btn-primary w-100" disabled="@_submitting">
+                    @(_submitting ? "Signing in..." : "Log in")
+                </button>
+            </EditForm>
+        </div>
+    </div>
+</div>
+
+@code {
+    private readonly LoginForm _form = new();
+    private string? _error;
+    private bool _submitting;
+
+    private async Task HandleLogin()
+    {
+        _submitting = true;
+        _error = null;
+
+        var result = await Api.LoginAsync(_form.Email, _form.Password);
+
+        _submitting = false;
+
+        if (!result.Success)
+        {
+            _error = result.Error;
+            return;
+        }
+
+        AuthState.SetSession(result.Token!, _form.Email, result.Roles);
+        Nav.NavigateTo("/users");
+    }
+
+    private sealed class LoginForm
+    {
+        public string Email { get; set; } = string.Empty;
+        public string Password { get; set; } = string.Empty;
+    }
+}

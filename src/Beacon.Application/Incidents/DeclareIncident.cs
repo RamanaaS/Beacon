@@ -18,7 +18,7 @@ public sealed record DeclareIncidentCommand(
     string DeclaredByUserId,
     string AlertFingerprint) : IRequest<IncidentId>;
 
-public sealed class DeclareIncidentCommandHandler(IIncidentRepository repository, IClock clock)
+public sealed class DeclareIncidentCommandHandler(IIncidentRepository repository, IClock clock, IPublisher publisher)
     : IRequestHandler<DeclareIncidentCommand, IncidentId>
 {
     public async Task<IncidentId> Handle(DeclareIncidentCommand request, CancellationToken cancellationToken)
@@ -32,6 +32,12 @@ public sealed class DeclareIncidentCommandHandler(IIncidentRepository repository
 
         repository.Add(incident);
         await repository.SaveChangesAsync(cancellationToken);
+
+        // Fire-and-move-on, deliberately after the save succeeds, not before — a notification
+        // about an incident that failed to persist would be worse than no notification at all.
+        await publisher.Publish(
+            new IncidentDeclaredNotification(incident.Id, incident.Title, incident.CurrentSeverity),
+            cancellationToken);
 
         return incident.Id;
     }

@@ -1,0 +1,12 @@
+@page "/"
+@inject AdminAuthState AuthState
+@inject NavigationManager Nav
+
+<PageTitle>Beacon Admin</PageTitle>
+
+@code {
+    protected override void OnInitialized()
+    {
+        Nav.NavigateTo(AuthState.IsAuthenticated ? "/users" : "/login");
+    }
+}

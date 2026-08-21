@@ -1,0 +1,29 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <link rel="stylesheet" href="lib/bootstrap/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="@Assets["app.css"]" />
+    <link rel="stylesheet" href="@Assets["Beacon.Admin.styles.css"]" />
+    <ImportMap />
+    <HeadOutlet @rendermode="InteractiveServer" />
+</head>
+
+<body>
+    <!-- The --empty template scaffold doesn't set this by default: without @@rendermode here,
+         every page renders as static SSR only — no SignalR circuit ever connects, so EditForm
+         submits fall back to plain HTTP POSTs (which then 400 for lacking @@formname) and any
+         IJSRuntime/SignalR-client code (ApexCharts, the live-alerts ticker) silently never runs. -->
+    <Routes @rendermode="InteractiveServer" />
+    <script src="_framework/blazor.web.js"></script>
+    <!-- ApexCharts via CDN — a real deployed app (unlike an Artifact) can reference one; bundling
+         it locally the way Bootstrap is here would be the production choice, not required for this
+         portfolio project's local-dev purposes. -->
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts@3.54.1/dist/apexcharts.min.js"></script>
+    <script src="js/charts.js"></script>
+</body>
+
+</html>

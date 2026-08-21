@@ -13,7 +13,7 @@ public class IngestAlertHandlerTests
     public async Task First_alert_for_a_fingerprint_declares_a_new_incident()
     {
         var repository = new InMemoryIncidentRepository();
-        var handler = new IngestAlertCommandHandler(new InMemoryRecentAlertsStore(), repository, new MutableClock(Now));
+        var handler = new IngestAlertCommandHandler(new InMemoryRecentAlertsStore(), repository, new MutableClock(Now), new NoOpPublisher());
 
         var result = await handler.Handle(new IngestAlertCommand(
             "prometheus", "HighCPU", "web-1", Severity.Sev2_High, "CPU usage above threshold"), CancellationToken.None);
@@ -31,7 +31,7 @@ public class IngestAlertHandlerTests
     public async Task Same_alert_again_inside_the_dedup_window_does_not_declare_a_second_incident()
     {
         var clock = new MutableClock(Now);
-        var handler = new IngestAlertCommandHandler(new InMemoryRecentAlertsStore(), new InMemoryIncidentRepository(), clock);
+        var handler = new IngestAlertCommandHandler(new InMemoryRecentAlertsStore(), new InMemoryIncidentRepository(), clock, new NoOpPublisher());
         var command = new IngestAlertCommand("prometheus", "HighCPU", "web-1", Severity.Sev2_High, "CPU usage above threshold");
 
         var first = await handler.Handle(command, CancellationToken.None);
@@ -47,7 +47,7 @@ public class IngestAlertHandlerTests
     public async Task Same_alert_again_outside_the_dedup_window_declares_a_second_incident()
     {
         var clock = new MutableClock(Now);
-        var handler = new IngestAlertCommandHandler(new InMemoryRecentAlertsStore(), new InMemoryIncidentRepository(), clock);
+        var handler = new IngestAlertCommandHandler(new InMemoryRecentAlertsStore(), new InMemoryIncidentRepository(), clock, new NoOpPublisher());
         var command = new IngestAlertCommand("prometheus", "HighCPU", "web-1", Severity.Sev2_High, "CPU usage above threshold");
 
         var first = await handler.Handle(command, CancellationToken.None);
@@ -61,7 +61,7 @@ public class IngestAlertHandlerTests
     [Fact]
     public async Task Different_instance_is_a_different_fingerprint_and_declares_its_own_incident()
     {
-        var handler = new IngestAlertCommandHandler(new InMemoryRecentAlertsStore(), new InMemoryIncidentRepository(), new MutableClock(Now));
+        var handler = new IngestAlertCommandHandler(new InMemoryRecentAlertsStore(), new InMemoryIncidentRepository(), new MutableClock(Now), new NoOpPublisher());
 
         var first = await handler.Handle(new IngestAlertCommand(
             "prometheus", "HighCPU", "web-1", Severity.Sev2_High, "CPU usage above threshold"), CancellationToken.None);

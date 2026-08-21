@@ -3,6 +3,7 @@ using Beacon.Application.Common;
 using Beacon.Application.Incidents;
 using Beacon.Domain.Alerts;
 using Beacon.Domain.Incidents;
+using MediatR;
 
 namespace Beacon.UnitTests.Alerts;
 
@@ -60,4 +61,16 @@ internal sealed class MutableClock(DateTimeOffset start) : IClock
     public DateTimeOffset UtcNow { get; private set; } = start;
 
     public void Advance(TimeSpan by) => UtcNow += by;
+}
+
+/// <summary>
+/// These orchestration tests care about repository/dedup-store state, not who's listening for
+/// notifications — a no-op is the honest fake here, not a spy tracking calls nobody asserts on.
+/// </summary>
+internal sealed class NoOpPublisher : IPublisher
+{
+    public Task Publish(object notification, CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+    public Task Publish<TNotification>(TNotification notification, CancellationToken cancellationToken = default)
+        where TNotification : INotification => Task.CompletedTask;
 }

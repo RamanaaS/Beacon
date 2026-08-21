@@ -1,0 +1,83 @@
+@page "/users"
+@inject BeaconApiClient Api
+@inject AdminAuthState AuthState
+@inject NavigationManager Nav
+
+<h1 class="h4 mb-3">Users</h1>
+
+@if (!AuthState.IsAuthenticated)
+{
+    <p>Redirecting to login...</p>
+}
+else if (!AuthState.IsAdmin)
+{
+    <div class="alert alert-warning">Admin role required to manage users.</div>
+}
+else if (_users is null)
+{
+    <p>Loading...</p>
+}
+else
+{
+    <table class="table table-striped align-middle">
+        <thead>
+            <tr>
+                <th>Email</th>
+                <th>Display name</th>
+                <th>Role</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var user in _users)
+            {
+                <tr>
+                    <td>@user.Email</td>
+                    <td>@user.DisplayName</td>
+                    <td>
+                        <select class="form-select form-select-sm" style="width: auto;"
+                                value="@(user.Roles.FirstOrDefault() ?? "Viewer")"
+                                @onchange="@(e => ChangeRole(user.Id, e.Value!.ToString()!))">
+                            <option value="Admin">Admin</option>
+                            <option value="Responder">Responder</option>
+                            <option value="Viewer">Viewer</option>
+                        </select>
+                    </td>
+                    <td>
+                        @if (_savedUserId == user.Id)
+                        {
+                            <span class="text-success small">Saved</span>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private List<AdminUser>? _users;
+    private string? _savedUserId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!AuthState.IsAuthenticated)
+        {
+            Nav.NavigateTo("/login");
+            return;
+        }
+
+        if (AuthState.IsAdmin)
+            _users = await Api.ListUsersAsync();
+    }
+
+    private async Task ChangeRole(string userId, string role)
+    {
+        var success = await Api.UpdateUserRoleAsync(userId, role);
+        if (success)
+        {
+            _savedUserId = userId;
+            _users = await Api.ListUsersAsync();
+        }
+    }
+}

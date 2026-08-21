@@ -25,7 +25,8 @@ public sealed record IngestAlertResult(AlertDecision Decision, IncidentId? Incid
 public sealed class IngestAlertCommandHandler(
     IRecentAlertsStore recentAlertsStore,
     IIncidentRepository incidentRepository,
-    IClock clock) : IRequestHandler<IngestAlertCommand, IngestAlertResult>
+    IClock clock,
+    IPublisher publisher) : IRequestHandler<IngestAlertCommand, IngestAlertResult>
 {
     // Mirrors Prometheus Alertmanager's default grouping/repeat-interval scale. A real system
     // would make this configurable per alert source; hardcoded is the honest amount of
@@ -54,6 +55,10 @@ public sealed class IngestAlertCommandHandler(
 
         incidentRepository.Add(incident);
         await incidentRepository.SaveChangesAsync(cancellationToken);
+
+        await publisher.Publish(
+            new IncidentDeclaredNotification(incident.Id, incident.Title, incident.CurrentSeverity),
+            cancellationToken);
 
         return new IngestAlertResult(AlertDecision.New, incident.Id);
     }

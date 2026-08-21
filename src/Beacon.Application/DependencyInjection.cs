@@ -1,15 +1,21 @@
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Beacon.Application;
 
 public static class DependencyInjection
 {
-    public static IServiceCollection AddApplication(this IServiceCollection services)
+    /// <summary>
+    /// Takes the calling assembly (usually Beacon.Api) as an extra scan target alongside
+    /// Beacon.Application's own — that's what lets a notification handler like
+    /// IncidentDeclaredNotificationHandler live in Beacon.Api (where SignalR actually is) and
+    /// still get discovered by MediatR, without Application ever referencing Api or SignalR.
+    /// </summary>
+    public static IServiceCollection AddApplication(this IServiceCollection services, params Assembly[] additionalHandlerAssemblies)
     {
-        // MediatR's assembly scan registers every IRequestHandler<> in this assembly — the
-        // individual AddScoped<XxxCommandHandler>() calls this replaced were about to become
-        // five, then six, lines of the exact same boilerplate for every new command.
-        services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(DependencyInjection).Assembly));
+        Assembly[] assemblies = [typeof(DependencyInjection).Assembly, .. additionalHandlerAssemblies];
+
+        services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblies(assemblies));
 
         return services;
     }

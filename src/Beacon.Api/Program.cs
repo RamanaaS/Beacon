@@ -13,18 +13,29 @@ using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddApplication();
+// typeof(Program).Assembly added to the scan so MediatR also discovers notification handlers
+// that live in Beacon.Api itself (IncidentDeclaredNotificationHandler bridges to SignalR) — see
+// DependencyInjection.cs's own comment for why that handler can't live in Beacon.Application.
+builder.Services.AddApplication(typeof(Program).Assembly);
 builder.Services.AddInfrastructure(builder.Configuration);
 
 builder.Services.AddSingleton<WebSocketConnectionManager>();
 builder.Services.AddHostedService<MetricsSimulatorService>();
 builder.Services.AddHostedService<EscalationCheckerService>();
 
+// Unauthenticated, like the telemetry WebSocket hub (Phase 4) and for the same reason — nothing
+// crossing this channel (an incident id/title/severity) is sensitive enough to justify the extra
+// complexity of authenticating a SignalR connection right now. Beacon.Admin (the one real
+// consumer) connects server-to-server from its own backend, not from an end user's browser, so
+// this isn't reachable directly from the public internet either.
+builder.Services.AddSignalR();
+
 // Read-only access needs any authenticated user; acting on an incident needs Responder or
 // Admin. Viewer-only accounts (auditors, stakeholders watching a status page) can never declare,
 // acknowledge, resolve, or escalate — enforced here, not just left as a documentation convention.
 builder.Services.AddAuthorizationBuilder()
-    .AddPolicy("IncidentResponder", policy => policy.RequireRole(Roles.Responder, Roles.Admin));
+    .AddPolicy("IncidentResponder", policy => policy.RequireRole(Roles.Responder, Roles.Admin))
+    .AddPolicy("AdminOnly", policy => policy.RequireRole(Roles.Admin));
 
 // Named "DevCors" deliberately, not applied unconditionally — an allowed-origin list for a real
 // deployed frontend is a production/deployment decision (Phase 18), not something to hardcode
@@ -94,9 +105,11 @@ if (app.Environment.IsDevelopment())
 }
 
 app.MapAuthEndpoints();
+app.MapAdminEndpoints();
 app.MapIncidentEndpoints();
 app.MapAlertEndpoints();
 app.MapTelemetryEndpoints();
+app.MapHub<IncidentAlertsHub>("/hubs/incident-alerts");
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }))
    .WithName("HealthCheck")

@@ -1,0 +1,95 @@
+@page "/analytics"
+@inject BeaconApiClient Api
+@inject AdminAuthState AuthState
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<h1 class="h4 mb-3">Analytics</h1>
+
+@if (!AuthState.IsAuthenticated)
+{
+    <p>Redirecting to login...</p>
+}
+else if (_incidents is null)
+{
+    <p>Loading...</p>
+}
+else
+{
+    <div class="row g-3 mb-4">
+        <div class="col-md-3">
+            <div class="card text-center"><div class="card-body">
+                <div class="display-6">@_incidents.Count</div>
+                <div class="text-muted small">Total incidents</div>
+            </div></div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-center"><div class="card-body">
+                <div class="display-6">@_incidents.Count(i => i.Status != "Resolved")</div>
+                <div class="text-muted small">Currently open</div>
+            </div></div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-center"><div class="card-body">
+                <div class="display-6">@_incidents.Count(i => i.IsEscalated)</div>
+                <div class="text-muted small">Escalated</div>
+            </div></div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-center"><div class="card-body">
+                <div class="display-6">@_incidents.Count(i => i.Severity == "Sev1_Critical")</div>
+                <div class="text-muted small">Sev1 incidents</div>
+            </div></div>
+        </div>
+    </div>
+
+    <div class="card"><div class="card-body">
+        <h2 class="h6">Incidents by severity</h2>
+        <div id="@ChartId"></div>
+    </div></div>
+}
+
+@code {
+    private List<IncidentSummary>? _incidents;
+    private readonly string ChartId = $"severity-chart-{Guid.NewGuid():N}";
+    private bool _rendered;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!AuthState.IsAuthenticated)
+        {
+            Nav.NavigateTo("/login");
+            return;
+        }
+
+        _incidents = await Api.ListIncidentsAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // ApexCharts needs the #ChartId div to actually exist in the DOM first, which only
+        // happens after Blazor's own render — calling the JS interop from OnInitialized would
+        // target an element that doesn't exist yet.
+        if (firstRender && _incidents is not null && !_rendered)
+        {
+            _rendered = true;
+            var severities = new[] { "Sev1_Critical", "Sev2_High", "Sev3_Medium", "Sev4_Low" };
+            var counts = severities.Select(s => _incidents.Count(i => i.Severity == s)).ToArray();
+
+            await JS.InvokeVoidAsync("beaconCharts.renderBarChart", ChartId, severities, counts);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        // Guard on _rendered: if the user navigates away before OnAfterRenderAsync's first JS
+        // call ever ran (e.g. a fast client, or during the static-SSR prerender pass before the
+        // interactive circuit attaches), there's no chart to dispose and JS interop itself would
+        // throw InvalidOperationException ("cannot be issued... being statically rendered").
+        if (!_rendered) return;
+
+        try { await JS.InvokeVoidAsync("beaconCharts.dispose", ChartId); }
+        catch (JSDisconnectedException) { /* circuit already gone — nothing to clean up */ }
+    }
+}
