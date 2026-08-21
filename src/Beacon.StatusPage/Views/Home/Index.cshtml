@@ -1,0 +1,106 @@
+@model Beacon.StatusPage.Models.StatusPageViewModel
+@{
+    ViewData["Title"] = "System Status";
+}
+
+@section Head {
+    <meta http-equiv="refresh" content="30" />
+    <style>
+        .status-banner { border-radius: .5rem; padding: 1.25rem 1.5rem; font-size: 1.25rem; font-weight: 600; }
+        .status-operational { background: #d1e7dd; color: #0f5132; }
+        .status-degradedperformance { background: #fff3cd; color: #664d03; }
+        .status-partialoutage { background: #ffe5d0; color: #7a3b00; }
+        .status-majoroutage { background: #f8d7da; color: #842029; }
+        .status-unavailable { background: #e2e3e5; color: #41464b; }
+        .component-dot { display: inline-block; width: .6rem; height: .6rem; border-radius: 50%; background: #198754; margin-right: .5rem; }
+        .uptime-strip { display: flex; gap: 3px; }
+        .uptime-day { flex: 1; height: 28px; border-radius: 2px; background: #198754; }
+        .uptime-day.incident { background: #dc3545; }
+        .uptime-labels { display: flex; justify-content: space-between; font-size: .75rem; color: #6c757d; margin-top: .25rem; }
+    </style>
+}
+
+@if (!Model.IsAvailable)
+{
+    <div class="status-banner status-unavailable mb-4">
+        Status information is temporarily unavailable — please check back shortly.
+    </div>
+    <p class="text-muted">
+        This page couldn't reach Beacon's status service. That's a deliberate degrade, not a crash:
+        a status page is often checked precisely when backend systems are under stress, so it's
+        built to still render something coherent rather than fail outright.
+    </p>
+}
+else
+{
+    var status = Model.Status!;
+
+    <div class="status-banner status-@status.OverallStatus.ToLowerInvariant() mb-4">
+        @OverallStatusLabel(status.OverallStatus)
+    </div>
+
+    <h2 class="h5">Components</h2>
+    <ul class="list-group mb-4">
+        @foreach (var component in status.Components)
+        {
+            <li class="list-group-item">
+                <span class="component-dot"></span>@component.Name
+                <span class="float-end text-success">@component.Status</span>
+            </li>
+        }
+    </ul>
+
+    <h2 class="h5">Active incidents</h2>
+    @if (status.ActiveIncidents.Count == 0)
+    {
+        <p class="text-muted mb-4">No active incidents.</p>
+    }
+    else
+    {
+        <div class="mb-4">
+            @foreach (var incident in status.ActiveIncidents)
+            {
+                <div class="card mb-2">
+                    <div class="card-body py-2">
+                        <strong>@incident.Title</strong>
+                        <span class="badge bg-secondary ms-2">@SeverityLabel(incident.Severity)</span>
+                        <span class="badge bg-light text-dark ms-1">@incident.Status</span>
+                        <div class="text-muted small">Declared @incident.DeclaredAt.ToString("u")</div>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+
+    <h2 class="h5">Past 30 days</h2>
+    <div class="uptime-strip mb-1">
+        @foreach (var day in status.UptimeHistory)
+        {
+            <div class="uptime-day @(day.HadMajorIncident ? "incident" : "")" title="@day.Date.ToString("yyyy-MM-dd") — @(day.HadMajorIncident ? "Major incident" : "No major incident")"></div>
+        }
+    </div>
+    <div class="uptime-labels">
+        <span>@status.UptimeHistory.First().Date.ToString("MMM d")</span>
+        <span>@status.UptimeHistory.Last().Date.ToString("MMM d")</span>
+    </div>
+}
+
+@functions {
+    private static string OverallStatusLabel(string status) => status switch
+    {
+        "Operational" => "All Systems Operational",
+        "DegradedPerformance" => "Degraded Performance",
+        "PartialOutage" => "Partial Outage",
+        "MajorOutage" => "Major Outage",
+        _ => status
+    };
+
+    private static string SeverityLabel(string severity) => severity switch
+    {
+        "Sev1_Critical" => "Sev1 · Critical",
+        "Sev2_High" => "Sev2 · High",
+        "Sev3_Medium" => "Sev3 · Medium",
+        "Sev4_Low" => "Sev4 · Low",
+        _ => severity
+    };
+}

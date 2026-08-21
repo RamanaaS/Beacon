@@ -20,11 +20,14 @@ obj/
 .DS_Store
 Thumbs.db
 
-## Frontend (future phases)
+## Frontend build output (Vite etc.) — deliberately NOT wwwroot/lib/**/dist, which is where the
+## ASP.NET Core MVC template's libman-restored Bootstrap/jQuery actually live and need to be
+## committed for the app to render styled at all.
 node_modules/
-dist/
+src/frontend/*/dist/
 build/
 verify-screenshots/
+!**/wwwroot/lib/**
 
 ## Secrets / local env
 *.env
