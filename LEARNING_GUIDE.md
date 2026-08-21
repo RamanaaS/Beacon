@@ -1342,12 +1342,69 @@ the fix belongs in the test, which now clicks the in-app nav links instead (Blaz
 
 ---
 
-## Next: Phase 12 — Public Status Page (ASP.NET Core MVC)
+## Phase 12 — Public Status Page (backend done, frontend not started)
 
-Not started. Still open from earlier phases: Docker's daemon still isn't running (checked again
-this session — unchanged), so Redis-dependent verification (Phase 3's live-Redis test) and any
-Docker/Testcontainers-dependent phase stay blocked on that; push this repo's history to GitHub once
-the account/authentication issue on that end is sorted out; if a real Anthropic API key gets
-configured via user-secrets, do the one remaining live end-to-end call Phase 8's code is otherwise
-ready for; and the raw-GUID-actor UX gap from Phase 9 is still open (needs a real design decision,
-not a quick patch).
+**Status: partial — backend done and tested, `Beacon.StatusPage` (ASP.NET Core MVC) not yet built.**
+Stopped here deliberately at a clean, fully-committed point rather than leaving a half-scaffolded
+new project sitting uncommitted.
+
+### What's done
+
+`GET /api/status` — unauthenticated, output-cached (15s). `GetPublicStatusQuery`/`Handler`
+(`Beacon.Application/Incidents/GetPublicStatus.cs`) computes three real things, not placeholders:
+
+- **Overall status banner** — derived from the highest-severity currently-active (non-resolved)
+  incident: Sev1 → `MajorOutage`, Sev2 → `PartialOutage`, Sev3/4 → `DegradedPerformance`, none →
+  `Operational`.
+- **30-day uptime history** — for each of the last 30 days, whether a Sev1/Sev2 incident was open
+  at any point that day, computed from each incident's real declared/resolved timestamps (not
+  hardcoded green squares).
+- **Component list** — a fixed, honest placeholder: `payments-api`/`checkout-api`/`auth-api`
+  (the same three services Phase 4's telemetry simulator names) always reporting `Operational`.
+  `Incident` has no per-component tag anywhere through Phase 11 — a real status page ties each
+  incident to the specific component(s) it affects, but adding that now would mean touching the
+  aggregate, the declare command, and every existing caller across three frontends for a demo
+  page. Documented as a deliberate scope boundary, the same pattern as Phase 9's raw-GUID-actor
+  gap — not a silently missing feature.
+
+`PublicIncidentSummary` is a deliberately narrower DTO than the authenticated
+`IncidentSummaryResponse` (Phase 9) — title/severity/status/declared-at only, no actor ids, no
+internal notes. This is the one endpoint in the system a client with no account can reach, so the
+projection itself has to be curated, not just gated by `[Authorize]`.
+
+**A real test-infrastructure gotcha, caught before it caused flaky CI, not after:**
+`WebApplicationFactory<Program>` reuses one in-process server — and therefore one output-cache
+store — across every test in the integration-test collection. A "declare an incident, then
+immediately re-read `/api/status`" assertion would be flaky against a 15-second cache if an
+earlier, unrelated test had already warmed that cache entry. Fixed by skipping
+`app.UseOutputCache()` specifically when `IWebHostEnvironment.EnvironmentName == "Testing"` — real
+dev/production traffic still gets the cache; the integration-test host trades that performance
+optimization for deterministic reads, an explicit, narrow exception, not caching disabled broadly.
+
+73/73 backend tests passing (47 unit + 26 integration).
+
+### What's next
+
+Build `Beacon.StatusPage` — a small ASP.NET Core MVC project (per ARCHITECTURE.md's own Table C
+reasoning: a public, cacheable, no-login page is genuinely MVC/Razor's strongest fit, not a SPA-by-
+default reflex), one controller calling `GET /api/status` server-to-server (same pattern as
+`Beacon.Admin`'s `BeaconApiClient`, no CORS needed), one Index view rendering the status banner,
+component list, active-incident feed, and a 30-cell uptime strip, with a simple `<meta refresh>` or
+small polling script for live updates (no SignalR here — that would cut against the same "server-
+rendered, not SPA" reasoning the project chose MVC for in the first place). Then verify with a real
+Playwright browser run before calling the phase done, same discipline as every frontend phase so far.
+
+---
+
+## Next: Phase 12 (continued) — Beacon.StatusPage frontend, then Phase 13 — Polyglot pieces
+
+Still open from earlier phases: Docker's daemon still isn't running (checked again this session —
+unchanged), so Redis-dependent verification (Phase 3's live-Redis test) and any
+Docker/Testcontainers-dependent phase stay blocked on that; **GitHub push is still blocked** —
+`git push` failed this session with "Repository not found" against
+`https://github.com/RamanaaS/Beacon.git`, so despite `git status` reporting "up to date with
+origin/main" (a stale/cached tracking ref, not proof of a successful push), the account-mismatch
+issue in GitHub Desktop is evidently still unresolved and every commit through Phase 12's backend
+remains local-only; if a real Anthropic API key gets configured via user-secrets, do the one
+remaining live end-to-end call Phase 8's code is otherwise ready for; and the raw-GUID-actor UX gap
+from Phase 9 is still open (needs a real design decision, not a quick patch).
