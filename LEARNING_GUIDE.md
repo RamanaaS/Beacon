@@ -1011,10 +1011,117 @@ proven correct by every other endpoint using the identical pattern.
 
 ---
 
-## Next: Phase 9 — Web Dashboard (React + MobX)
+## Phase 9 — Web Dashboard (React + MobX)
+
+**Status: done.** `Beacon.WarRoom` — Vite + React + TypeScript + MobX, RxJS, react-router,
+Chart.js. First frontend work on this project, and the first phase verified with a real headless
+browser instead of `dotnet test`: registered a user, logged in, watched live telemetry actually
+render from the Phase 4 WebSocket, declared/acknowledged/resolved a real incident, and confirmed
+the Excel/PDF/AI-postmortem buttons all appear correctly — with screenshots, not just "the build
+succeeded."
+
+Two small backend additions landed first, in their own commit, because the dashboard genuinely
+needed them and they didn't exist yet: `GET /api/incidents` (a list endpoint — only single-incident
+lookup existed through Phase 8) and a full `Timeline` array on `GetIncidentQuery`'s response
+(previously just an `EventCount`). Both reuse `IncidentEventFormatter` (Phase 6/8) rather than
+inventing a fourth way to render an `IncidentEvent` — worth noticing as a real, recurring payoff of
+that one shared formatter existing at all.
+
+### Before coding
+
+**Why MobX, and why the store shapes look the way they do.** Three stores, each owning one thing:
+`AuthStore` (session + token persistence), `IncidentStore` (list/detail/actions), `TelemetryStore`
+(the WebSocket + live chart data). `makeAutoObservable` plus `observer()`-wrapped components is
+the whole mechanism — no reducers, no action-type strings, no dispatch. The trade a Redux-shaped
+codebase makes for explicit action logs isn't needed here; the trade MobX makes (implicit
+reactivity via proxies) is the one that matches "a handful of stores, direct method calls" better.
+
+**The circular-import trap avoided in `api/client.ts`.** `AuthStore` needs to attach its token to
+every API request; naively, `apiClient` would import `authStore` to read the token, while
+`authStore` imports `apiClient` to make its own login/register calls — a circular dependency.
+Fixed by having `client.ts` export a plain `setAuthToken()` function that mutates the axios
+instance's default headers directly; `AuthStore` calls it, `client.ts` never imports `AuthStore`
+at all. A small, real example of "which module should own the dependency direction" mattering.
+
+**A genuine reason to reach for RxJS, not just because the resume lists it.**
+`MetricsSimulatorService` (Phase 4) broadcasts 3 WebSocket messages per 2-second tick — one per
+simulated service. Applying each one straight to MobX state as it arrives would trigger 3
+React re-renders in quick succession for what's really one tick of new data.
+`TelemetryStore` pipes incoming samples through `rawSamples$.pipe(bufferTime(500), filter(...))`
+first, batching whatever arrived in the last half-second into a single state update. That's the
+actual justification for RxJS here — reducing render churn against a known, bursty message
+pattern — not a checkbox for the skill.
+
+**Why file downloads go through `apiClient`, not a plain `<a href>`.** Every incident endpoint
+requires a Bearer token (Phase 7), and a browser's native anchor navigation can't attach a custom
+`Authorization` header. `downloadReport()` fetches the file through the authenticated `apiClient`
+with `responseType: "blob"`, then hands the browser a `URL.createObjectURL(blob)` via a
+programmatically-clicked, invisible anchor. This is the actual correct pattern for an authenticated
+file download in an SPA — a real, recurring gotcha, not specific to this project.
+
+### During coding — what got built, and what real verification actually caught
+
+| File | What it is |
+|---|---|
+| `src/frontend/Beacon.WarRoom/src/stores/*.ts` | Auth, Incident, Telemetry — one store, one responsibility each |
+| `src/frontend/Beacon.WarRoom/src/pages/*.tsx` | Login, Dashboard, Incident Detail |
+| `src/frontend/Beacon.WarRoom/src/components/*.tsx` | Protected route guard, declare-incident form, telemetry chart |
+| `src/frontend/Beacon.WarRoom/verify.mjs` | A one-off Playwright driver — not part of the app; see below |
+
+**`chromium-cli` (the `run` skill's default browser driver) isn't available on this Windows
+machine.** The skill's own fallback guidance — adapt the Electron example's `_electron`/Playwright
+REPL pattern — was followed instead: installed `playwright` as a dev dependency, pulled the
+Chromium binary (`npx playwright install chromium`), and wrote `verify.mjs`, a small script that
+drives the real running app through the full register → login → declare → acknowledge → resolve
+flow and screenshots each step. This is a genuine example of "the fallback pattern needed real
+setup work" — the skill itself suggests that's the signal to consider `/run-skill-generator` so a
+future session doesn't rediscover the same Windows-specific `chromium-cli` gap from scratch.
+
+**What looking at the actual screenshots caught, beyond "the script didn't throw."** The Playwright
+run itself reported all 8 steps green with zero console errors — but the *resolved incident
+timeline screenshot* surfaced something the passing script didn't: the "Actor" next to each
+timeline event renders as a raw GUID (`6c5975b9-2c9e-...`), not an email or display name. This is
+technically correct — `IncidentEventFormatter.Actor()` returns exactly the user-id claim `Phase 7`'s
+`GetUserId()` extracts from the JWT, and that's genuinely the user's Identity `Id` — but it's a
+real, honest UX gap: a human reading this timeline sees an opaque ID, not "who did this." Fixing it
+properly means resolving a display name for a user id somewhere in the stack — a real design
+question (denormalize a display name onto each domain event at write time? Look it up at read
+time via a new endpoint?) — not a one-line patch, so it's tracked here as an explicit open item
+rather than silently left for someone to notice later. This is exactly why "look at the screenshot"
+is the skill's own explicit instruction, not "check the exit code": an all-green automated run and
+an actually-correct UI are different claims.
+
+### Common mistakes (and why this phase's code avoids them)
+
+1. **Trusting "the script exited 0" as proof the UI is correct.** It proves the selectors matched
+   and nothing threw — not that what rendered was right. The GUID-instead-of-name gap above was
+   invisible to the passing script and only became visible by reading the screenshot.
+2. **Letting two modules import each other for convenience.** The `AuthStore`/`apiClient`
+   circular-import shape is an easy trap the moment "the thing that has the token" and "the thing
+   that uses the token" both feel like they should own the relationship.
+3. **Assuming a browser will attach auth headers to a plain link.** It won't — and a report
+   download button that quietly 401s because of this is a real, easy-to-ship bug in any SPA sitting
+   in front of a JWT-protected API.
+
+### Interview questions this phase prepares you for
+
+- Walk through the actual mechanism `makeAutoObservable` + `observer()` uses to trigger re-renders
+  — what is MobX actually watching?
+- Why does `TelemetryStore` use `bufferTime` instead of applying every WebSocket message to state
+  immediately? What would the UI cost be without it?
+- Why can't a plain `<a href="/api/incidents/{id}/report.pdf">` work once that endpoint requires a
+  JWT, and what's the actual fix?
+- The Playwright run passed cleanly, but the screenshot revealed a real UX bug it didn't catch.
+  What's the general lesson about what an automated E2E pass does and doesn't prove?
+
+---
+
+## Next: Phase 10 — On-Call Console (Electron)
 
 Not started. Still open from earlier phases: once Docker's daemon is actually running and Redis is
 reachable, go back and write the live-Redis integration test Phase 3 left as an explicit open item;
 push this repo's history to GitHub once the account/authentication issue on that end is sorted out;
-and, if a real Anthropic API key gets configured via user-secrets, do the one remaining live
-end-to-end call this phase's code is otherwise fully ready for.
+if a real Anthropic API key gets configured via user-secrets, do the one remaining live end-to-end
+call Phase 8's code is otherwise fully ready for; and resolve the raw-GUID-actor UX gap this phase
+surfaced (needs a real design decision: denormalize a display name onto domain events at write
+time, or resolve one at read time).
