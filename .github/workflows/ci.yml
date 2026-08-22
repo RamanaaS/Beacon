@@ -1,0 +1,113 @@
+name: CI
+
+# Same honest framing as this project's Docker/Aspire work (Phase 15): written correctly, matching
+# every command already verified locally throughout this project, but never actually triggered —
+# the repo has been local-only its entire history (a GitHub Desktop account-mismatch issue that's
+# stayed unresolved across every phase; see LEARNING_GUIDE.md's Phase 16 entry). Once pushed to a
+# real GitHub remote, this workflow runs on GitHub's own hosted infrastructure, which is genuinely
+# different from this dev machine in ways that matter here: GitHub's windows-latest runners ship
+# with SQL Server LocalDB preinstalled (exactly what Beacon.IntegrationTests needs), so the .NET
+# job below would actually work on a real run even though local verification stopped at "the YAML
+# is syntactically correct and the commands match what's proven to work locally."
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  dotnet:
+    # windows-latest, not ubuntu-latest: two real reasons, not just "matches the dev machine."
+    # (1) SQL Server LocalDB, which Beacon.IntegrationTests connects to via BeaconApiFactory, ships
+    # preinstalled on GitHub's Windows runners and would need a separate container/service setup
+    # on Linux. (2) native/log-parser-shim's committed dist/log_parser_shim.dll is a Windows PE
+    # (Phase 13's MinGW build) - Beacon.Api's P/Invoke call would fail to load it on Linux.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore
+        run: dotnet restore Beacon.sln
+
+      - name: Build
+        run: dotnet build Beacon.sln --no-restore --configuration Release
+
+      # Beacon.IntegrationTests targets (localdb)\MSSQLLocalDB directly (BeaconApiFactory.cs) -
+      # already present on this runner image, no service container needed. Redis is genuinely NOT
+      # available here, which is fine on purpose: Phase 13's RedisRecentAlertsStore fail-open fix
+      # plus its circuit breaker mean alert-ingestion tests exercise the real degraded-Redis path
+      # (not a happy path CI can't reach) and still pass fast, not the 11+ second stall the
+      # unfixed code used to produce.
+      - name: Test (xUnit primary + MSTest comparison)
+        run: dotnet test Beacon.sln --no-build --configuration Release --filter "FullyQualifiedName!~SeleniumComparison" --logger "trx" --results-directory TestResults
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dotnet-test-results
+          path: TestResults
+
+  itsm-bridge:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/itsm-bridge
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Test
+        run: ./mvnw -B test
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: itsm-bridge-test-results
+          path: src/itsm-bridge/target/surefire-reports
+
+  log-parser-shim:
+    # Windows to match the committed dist/ artifact's own target (MinGW, win-x64) - building on
+    # Linux here would prove a *different* binary works, not the one actually shipped.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc
+
+      - name: Build and run native tests + benchmark
+        shell: msys2 {0}
+        run: |
+          cd native/log-parser-shim
+          gcc -shared -O2 -o dist/log_parser_shim.dll log_parser.c
+          gcc -O2 -o dist/test_log_parser.exe test_log_parser.c log_parser.c
+          ./dist/test_log_parser.exe
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/frontend/Beacon.WarRoom
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: src/frontend/Beacon.WarRoom/package-lock.json
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build

@@ -1,0 +1,91 @@
+name: Docker
+
+# Deliberately its own workflow, on ubuntu-latest specifically — GitHub's Linux-hosted runners have
+# real, working Docker; this dev machine's never has (see docker-compose.yml's own top comment and
+# LEARNING_GUIDE.md's Phase 3/13/15 entries). Every image build and the full docker-compose stack
+# below is written correctly and would actually execute once this reaches GitHub's infrastructure —
+# genuinely different from "written but structurally unverifiable" the way the CLI-bundle Aspire
+# path was blocked locally by a missing .NET 10 SDK. Still unverified *here*, for the same
+# unresolved GitHub-push reason documented throughout this project.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-images:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: beacon-api
+            context: .
+            dockerfile: src/Beacon.Api/Dockerfile
+          - name: beacon-admin
+            context: .
+            dockerfile: src/frontend/Beacon.Admin/Dockerfile
+          - name: beacon-statuspage
+            context: .
+            dockerfile: src/Beacon.StatusPage/Dockerfile
+          - name: beacon-warroom
+            context: src/frontend/Beacon.WarRoom
+            dockerfile: src/frontend/Beacon.WarRoom/Dockerfile
+          - name: itsm-bridge
+            context: src/itsm-bridge
+            dockerfile: src/itsm-bridge/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.name }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: false
+          tags: beacon/${{ matrix.name }}:ci
+
+  # Deliberately rebuilds via `docker compose up --build` rather than reusing build-images' output
+  # (not shared between jobs without extra cache plumbing) — the two jobs prove two different
+  # things. build-images is a fast matrix proving each Dockerfile is independently correct in
+  # isolation; this job proves the full *orchestration* actually works together (networking,
+  # healthcheck-gated startup ordering, real inter-service calls) — a genuinely different claim
+  # that only running the whole compose stack together can verify.
+  compose-smoke-test:
+    runs-on: ubuntu-latest
+    needs: build-images
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start the full stack
+        run: docker compose up --build -d
+
+      # sql/redis carry real healthchecks (docker-compose.yml); beacon-api's own depends_on waits
+      # on those before starting, so polling its actual /health endpoint is a genuine end-to-end
+      # readiness check for the whole chain, not a fixed sleep guessing how long startup takes.
+      - name: Wait for beacon-api to report healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:5252/health; then exit 0; fi
+            sleep 5
+          done
+          echo "beacon-api never became healthy" >&2
+          docker compose logs
+          exit 1
+
+      - name: Run the Postman/Newman collection against the live stack
+        run: |
+          cd docs/postman
+          npm ci
+          npx newman run Beacon.postman_collection.json
+
+      - name: Dump logs
+        if: always()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
