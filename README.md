@@ -6,7 +6,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design, skill mapping, and p
 
 ## Status
 
-**Phase 18 done.** Full incident lifecycle (declare/acknowledge/resolve/escalate) behind JWT auth
+**Phase 19 done.** Full incident lifecycle (declare/acknowledge/resolve/escalate) behind JWT auth
 and role-based authorization, CQRS-orchestrated, Excel/PDF/AI-postmortem reporting, live WebSocket
 telemetry, a MediatR pub/sub bridge to SignalR for real-time incident broadcasts, four separate
 frontends against the same API (React+MobX `Beacon.WarRoom`, Electron `Beacon.OnCallConsole`,
@@ -14,15 +14,20 @@ Blazor Server `Beacon.Admin`, MVC `Beacon.StatusPage`), three polyglot pieces (J
 native C `log-parser-shim` via P/Invoke, Python `alert-simulator`), a testing-formalization pass
 (MSTest comparison, Selenium comparison, Postman/Newman), containerization (five Dockerfiles +
 `docker-compose.yml`, a `.NET Aspire` AppHost), three GitHub Actions workflows plus a PR template,
-Bicep infrastructure for an Azure Container Apps target, and observability (Serilog structured
+Bicep infrastructure for an Azure Container Apps target, observability (Serilog structured
 logging, a three-tier `/health`/`/alive`/`/health/detail` split so a real Redis outage degrades
 gracefully instead of pulling a working instance out of rotation, and correlation IDs tying every
-log line for one request to the same ID a trace would show). 107/107 core .NET tests passing
-(79 backend + 24 MSTest + 4 new health-check tests), 8/8 Java tests, 21/21 Postman requests via
-Newman. Docker's daemon has never come up on this machine across the whole project — not even the
-process runs — so Testcontainers and actually starting any container stay the one explicitly,
-honestly blocked area locally; the `docker.yml` workflow would genuinely work once pushed, since
-GitHub's own runners have real Docker.
+log line for one request to the same ID a trace would show), and a hardening pass driven by live
+chaos testing: a genuine crash bug found and fixed (an unhandled exception in a background service
+used to take the *entire* API process down over a transient database blip, not just fail one
+request — confirmed live by forcing the database offline mid-run and watching the process die, then
+re-verified surviving the identical test after the fix), a catch-all exception handler closing an
+information-disclosure gap for unexpected errors, and per-IP rate limiting on the two endpoints
+with no auth wall. 107/107 core .NET tests passing (79 backend + 24 MSTest + 4 health-check tests),
+8/8 Java tests, 21/21 Postman requests via Newman. Docker's daemon has never come up on this
+machine across the whole project — not even the process runs — so Testcontainers and actually
+starting any container stay the one explicitly, honestly blocked area locally; the `docker.yml`
+workflow would genuinely work once pushed, since GitHub's own runners have real Docker.
 See [LEARNING_GUIDE.md](LEARNING_GUIDE.md) for what each phase teaches, concept by concept, and
 [docs/observability/diagnosing-a-slow-request.md](docs/observability/diagnosing-a-slow-request.md)
 for a real (not hypothetical) worked example of using this project's own logging/correlation-ID

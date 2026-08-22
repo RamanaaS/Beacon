@@ -2117,15 +2117,169 @@ tests), 8/8 Java tests — a net gain in coverage, not just a feature addition.
 
 ---
 
-## Next: Phase 19 — Hardening / failure scenarios
+## Phase 19 — Hardening (failure scenarios, a real crash bug, rate limiting)
 
-Still open from earlier phases: Docker's daemon still isn't running (checked again this session —
-not even the process exists), so nothing containerized can be run/verified end-to-end locally, and
-Testcontainers (Phase 14) stays blocked too; **GitHub push is still blocked** — `git push` failed
-this session with "Repository not found" against `https://github.com/RamanaaS/Beacon.git`, so
-despite `git status` reporting "up to date with origin/main" (a stale/cached tracking ref, not
-proof of a successful push), the account-mismatch issue in GitHub Desktop is evidently still
-unresolved and every commit remains local-only, meaning neither the Phase 16 GitHub Actions
-workflows nor Phase 17's Azure deploy workflow has ever actually triggered; no real Anthropic API
-key or Azure subscription is available in this environment either; and the raw-GUID-actor UX gap
-from Phase 9 is still open (needs a real design decision, not a quick patch).
+**Status: done, and this is the phase where "run it and watch, don't trust the design" caught the
+single most serious bug in the whole project.** Three separate live chaos attempts, two of which
+taught something real without testing the intended scenario at all, before the third one surfaced
+an unhandled exception in a background service that could take the entire API process down over a
+transient database blip.
+
+### Attempt 1: `sqllocaldb stop` doesn't actually simulate an outage
+
+The obvious first move — stop the LocalDB instance the API is pointed at — doesn't work as a chaos
+test. LocalDB instances are `Auto-create: Yes` by default and restart themselves on the very next
+connection attempt, confirmed via `sqllocaldb info MSSQLLocalDB` showing `State: Running` with a
+fresh start time seconds after the "stop." A real finding, but not the one being looked for: it
+says something about LocalDB's dev-convenience defaults, nothing about how this application
+behaves under a real outage.
+
+### Attempt 2: a broken connection string crashes at startup — expected, not a bug
+
+Pointing `ConnectionStrings__BeaconDb` at an unreachable host and starting the app fresh crashes it
+immediately, inside the Development-only `Database.MigrateAsync()` call in `Program.cs`. That's
+correct, not a gap: migrating on startup is explicitly a local-dev convenience (the same comment
+in `Program.cs` says as much — a real deployment applies migrations as a deliberate CI/CD step,
+Phase 17), so failing loudly and immediately when that step can't reach a database is the right
+behavior for that specific, narrow code path. Worth ruling out explicitly rather than silently
+assuming it was fine.
+
+### Attempt 3: the real test — force the database offline while the app is already running
+
+`sqlcmd -Q "ALTER DATABASE BeaconDb SET OFFLINE WITH ROLLBACK IMMEDIATE"` takes a specific database
+offline without touching the LocalDB instance itself, sidestepping attempt 1's auto-restart
+problem entirely. Run against an already-started, already-healthy `Beacon.Api`, then:
+
+```
+curl.exe http://localhost:5252/health/detail
+# curl: (7) Failed to connect to localhost port 5252
+```
+
+Exit code 7 — not a 503, not a slow response, the whole process was gone. `grep`-ing for
+`: BackgroundService` across `src/` turns up exactly two hosted services,
+`EscalationCheckerService` and `MetricsSimulatorService`, and `EscalationCheckerService`'s 30-second
+timer loop had zero exception handling around `IIncidentRepository.GetOpenIncidentsAsync()`. .NET's
+Generic Host treats an unhandled exception from `BackgroundService.ExecuteAsync` as **fatal to the
+whole host by default** (`BackgroundServiceExceptionBehavior.StopHost`) — the very next tick after
+the database went offline threw a `SqlException`, and that one unhandled exception in one
+30-second polling loop took down auth, incident declaration, every other endpoint, all of it, not
+just the escalation check itself.
+
+**The fix** ([EscalationCheckerService.cs](src/Beacon.Api/Incidents/EscalationCheckerService.cs)):
+wrap the loop body in try/catch, log via the already-injected `ILogger`, let the loop continue to
+its next tick instead of letting the exception propagate out of `ExecuteAsync`. The same
+"one broken dependency shouldn't take the whole system down" philosophy already established by
+Phase 13's Redis circuit breaker and Phase 18's readiness/liveness split — just applied to a
+background service instead of a request path, where .NET's default failure behavior is unusually
+unforgiving. `MetricsSimulatorService` got the identical wrapper for consistency even though its
+only real call (`WebSocketConnectionManager.BroadcastAsync`) already catches per-connection send
+failures internally (confirmed by reading it, not assumed) — defense in depth so any future
+addition to that loop has to opt *out* of tick-level isolation rather than opt in.
+
+**Re-verified live, the same way the bug was found**, not just by re-reading the diff: restarted
+the API, confirmed `/health/detail` healthy, forced `BeaconDb` offline the same way, waited past a
+30-second tick, and this time `/health/detail` kept responding — 503, correctly reporting `sql` as
+Unhealthy, but the *process* stayed alive. The log shows exactly what should happen now:
+
+```
+[ERR] Escalation check tick failed — will retry on the next tick instead of crashing the host
+System.InvalidOperationException: ... SqlException ... Login failed ...
+   at Beacon.Api.Incidents.EscalationCheckerService.ExecuteAsync(...)
+```
+
+Brought the database back online and, without restarting the process, `/health` recovered to 200
+on its own on the very next poll — the checker doesn't just survive one bad tick, it resumes
+working the moment the dependency comes back, no manual intervention needed.
+
+### Rate limiting the one pair of endpoints with no auth wall
+
+`/api/alerts/ingest` and `/api/alerts/ingest-raw` (Phase 13) are deliberately unauthenticated —
+machine-to-machine ingestion needs its own auth mechanism (API key, mTLS) that hasn't been built,
+not a JWT meant for a human login. That also makes them the only endpoints in this API with no
+login wall an abusive caller has to get through first. `Microsoft.AspNetCore.RateLimiting` (built
+into ASP.NET Core, no new package) adds a per-client-IP fixed-window policy — 60 requests/minute,
+`RateLimitPartition.GetFixedWindowLimiter` keyed on `RemoteIpAddress` so one noisy caller can't
+exhaust the bucket for everyone else — applied to the `/api/alerts` route group in
+[AlertEndpoints.cs](src/Beacon.Api/Alerts/AlertEndpoints.cs).
+
+Live-verified, not just built: 62 rapid `POST /api/alerts/ingest` calls all succeeded (200,
+`decision: New`, each with its own incident — this endpoint has no rate limit of its own reason
+to reject a well-formed body, it's the *volume* being capped, not the content); the very next batch
+of 65 came back 429 every single time, because the first batch had already exhausted the 60/minute
+window; waited for the window to roll over and the next request cleanly returned 200 again — the
+limiter recovers on its own, it isn't a one-way lockout.
+
+**A real, deliberate scope decision, not an oversight**: `UseRateLimiter()` is skipped under the
+`Testing` ASP.NET Core environment, the same way `UseOutputCache()` already was in Phase 12 —
+`IntegrationTestCollection.cs` shares exactly one `BeaconApiFactory` (one in-process host, one
+rate limiter instance) across the *entire* integration test collection, not one per test class, so
+`AlertEndpointsTests`' several `/ingest-raw` calls would accumulate against the same bucket as
+every unrelated test in the collection and start failing with 429 depending on run order — a
+flaky-test bug, not a safeguard. No automated test covers the 429 path as a result; the live chaos
+test above is the actual verification, the same "run it and look, don't just trust the design"
+approach this whole phase (and Phase 9's raw-GUID-actor screenshot, and Phase 18's middleware-
+ordering bug) has relied on throughout.
+
+### The exception handler: from four known cases to a real catch-all
+
+[DomainExceptionHandler.cs](src/Beacon.Api/Common/DomainExceptionHandler.cs) previously matched
+four specific exception types and returned `false` — meaning "not handled" — for anything else,
+which let ASP.NET Core's default behavior take over. With no developer-exception-page registered,
+that meant an unexpected exception (a `SqlException` from an unreachable database, say) could
+genuinely leak an internal exception message, a connection-string fragment, or a stack trace
+straight to an external caller — confirmed by actually stopping the database and hitting a live
+endpoint before the fix existed. Now every exception is handled: the four known cases keep their
+specific status/title, everything else becomes a generic 500 with the real exception logged
+server-side (Serilog, correlation-ID-enriched like every other log line for that request) but with
+only a generic message sent to the client outside Development — full detail still visible locally
+for debugging, never leaked externally.
+
+### Common mistakes (and why this phase's code avoids them)
+
+1. **Treating "the request returns 500" and "the request times out or drops" as the same failure
+   class.** A `BackgroundService` throwing doesn't produce a 500 for anyone — it kills the process,
+   so every in-flight and future request fails a different way (connection refused) than a normal
+   handled exception would. Chaos testing "does this endpoint degrade gracefully" isn't enough;
+   background services need their own, separate check.
+2. **Trusting that stopping a service simulates an outage.** LocalDB's auto-restart-on-connect
+   behavior quietly defeated the first, most obvious chaos-test attempt here — the only way to find
+   that out was to actually run it and check the instance's real state afterward, not assume the
+   command did what its name suggests.
+3. **Assuming a background service's dependency failures are automatically as forgiving as the
+   request pipeline's.** `IExceptionHandler` and `UseExceptionHandler()` only apply to the HTTP
+   request pipeline — a `BackgroundService` gets none of that safety net for free and needs its own
+   explicit try/catch, a genuinely easy thing to miss since nothing about the DI/hosting setup
+   warns you it's missing.
+
+### Interview questions this phase prepares you for
+
+- What does .NET's Generic Host do by default when a `BackgroundService.ExecuteAsync` throws an
+  unhandled exception, and why is that default arguably *too* aggressive for some services and
+  exactly right for others?
+- Walk through a chaos-testing attempt that taught you something different from what you set out to
+  test — what made the first two approaches here misleading, and how did that shape the third?
+- Why rate-limit by client IP instead of one global counter, and what's the actual failure mode a
+  global counter would have that a per-IP one doesn't?
+- Given a shared, expensive-to-set-up test fixture (a `WebApplicationFactory` reused across a whole
+  test collection), what categories of feature become awkward or actively unsafe to test through it
+  directly, and what do you do instead?
+
+107/107 core .NET tests still passing (no new automated tests this phase — see the rate-limiting
+section above for why one specific behavior is deliberately verified live instead of via the
+shared integration-test host), 8/8 Java tests unaffected.
+
+---
+
+## Next: Phase 20 — Docs and interview prep (final phase)
+
+Still open, unchanged by this phase: Docker's daemon still isn't running (checked again this
+session — not even the process exists), so nothing containerized can be run/verified end-to-end
+locally, and Testcontainers (Phase 14) stays blocked too; **GitHub push is still blocked** —
+`git push` failed this session with "Repository not found" against
+`https://github.com/RamanaaS/Beacon.git`, so despite `git status` reporting "up to date with
+origin/main" (a stale/cached tracking ref, not proof of a successful push), the account-mismatch
+issue in GitHub Desktop is evidently still unresolved and every commit remains local-only, meaning
+neither the Phase 16 GitHub Actions workflows nor Phase 17's Azure deploy workflow has ever
+actually triggered; no real Anthropic API key or Azure subscription is available in this
+environment either; and the raw-GUID-actor UX gap from Phase 9 is still open (needs a real design
+decision, not a quick patch).
