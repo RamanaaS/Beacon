@@ -6,20 +6,23 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design, skill mapping, and p
 
 ## Status
 
-**Phase 15 done.** Full incident lifecycle (declare/acknowledge/resolve/escalate) behind JWT auth
+**Phase 16 done.** Full incident lifecycle (declare/acknowledge/resolve/escalate) behind JWT auth
 and role-based authorization, CQRS-orchestrated, Excel/PDF/AI-postmortem reporting, live WebSocket
 telemetry, a MediatR pub/sub bridge to SignalR for real-time incident broadcasts, four separate
 frontends against the same API (React+MobX `Beacon.WarRoom`, Electron `Beacon.OnCallConsole`,
 Blazor Server `Beacon.Admin`, MVC `Beacon.StatusPage`), three polyglot pieces (Java `itsm-bridge`,
 native C `log-parser-shim` via P/Invoke, Python `alert-simulator`), a testing-formalization pass
 (MSTest comparison, Selenium comparison, Postman/Newman alongside the primary xUnit/Playwright
-suites), and containerization (five Dockerfiles + `docker-compose.yml`, plus a `.NET Aspire`
-AppHost whose dashboard was actually run and screenshotted — correctly showing every resource
-blocked on the one real constraint this environment has). 104/104 core .NET tests passing
-(79 backend + 24 MSTest + 1 Selenium), 8/8 Java tests, 21/21 Postman requests via Newman. Docker's
-daemon has never come up on this machine across the whole project — not even the process runs —
-so Testcontainers and actually starting any container stay the one explicitly, honestly blocked
-area; everything else in this project runs and is verified live, not just compiled.
+suites), containerization (five Dockerfiles + `docker-compose.yml`, plus a `.NET Aspire` AppHost
+whose dashboard was actually run and screenshotted), and two GitHub Actions workflows plus a PR
+template — schema-validated with `actionlint`, matching commands already proven locally, but never
+triggered: this repo has been local-only its entire history (a GitHub Desktop account-mismatch
+issue tracked since Phase 11). 104/104 core .NET tests passing (79 backend + 24 MSTest +
+1 Selenium), 8/8 Java tests, 21/21 Postman requests via Newman. Docker's daemon has never come up
+on this machine across the whole project — not even the process runs — so Testcontainers and
+actually starting any container stay the one explicitly, honestly blocked area locally; the
+`docker.yml` workflow would genuinely work once pushed, since GitHub's own runners have real
+Docker.
 See [LEARNING_GUIDE.md](LEARNING_GUIDE.md) for what each phase teaches, concept by concept.
 
 ## Prerequisites

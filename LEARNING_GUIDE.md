@@ -1804,17 +1804,111 @@ verified working.
 
 ---
 
-## Next: Phase 16 — CI/CD (GitHub Actions)
+## Phase 16 — CI/CD (GitHub Actions)
+
+**Status: written and schema-validated, never triggered.** The most honestly-constrained phase
+yet: GitHub Actions workflows have no meaning until a real push actually triggers one, and this
+repo has been local-only for its entire history (the same GitHub Desktop account-mismatch issue
+tracked since Phase 11). What's here is real, correct YAML — checked with `actionlint` (proper
+GitHub Actions schema/expression validation, not just "does it parse as YAML"), matching commands
+already proven to work locally throughout this project — that would actually run once pushed, not
+a placeholder.
+
+### `.github/workflows/ci.yml` — four jobs, each pinned to the runner OS that makes it *true*
+
+Not "run everything on ubuntu-latest because that's the default." Each job's runner choice is a
+real decision:
+
+- **`dotnet`** runs on `windows-latest` for two concrete reasons, not habit: GitHub's Windows
+  runners ship SQL Server LocalDB preinstalled — exactly what `BeaconApiFactory` connects
+  to — with no separate service-container setup needed; and `native/log-parser-shim`'s committed
+  `dist/log_parser_shim.dll` is a Windows PE (Phase 13's MinGW build) that Beacon.Api's P/Invoke
+  call would fail to load on Linux. Redis is genuinely *not* available on this runner, deliberately
+  left that way: Phase 13's `RedisRecentAlertsStore` fail-open fix plus its circuit breaker mean
+  alert-ingestion tests exercise the real degraded-Redis path in CI, fast, not a happy path CI
+  can't reach.
+- **`itsm-bridge`** and **`frontend`** run on `ubuntu-latest` — faster, cheaper runners, nothing
+  about either job needs Windows specifically.
+- **`log-parser-shim`** runs on `windows-latest` too, via `msys2/setup-msys2`, specifically to
+  build and test the *same* MinGW/win-x64 target already committed — building it on Linux would
+  prove a different binary works, not the one Beacon.Api actually loads.
+
+### `.github/workflows/docker.yml` — the one piece of this whole project that would work on GitHub even though it never has here
+
+A matrix job builds all five Dockerfiles independently, then a second job runs the *entire*
+`docker-compose.yml` stack, polls `beacon-api`'s real `/health` endpoint until it's actually ready
+(not a fixed sleep guessing at startup time), and runs the full Postman/Newman collection against
+the live, container-networked stack. GitHub's `ubuntu-latest` runners have real, working Docker —
+this is genuinely, structurally different from every other "written but unverified" claim in this
+project: it's not blocked by a missing capability *here* the way the AppHost's CLI-bundle path
+needed a .NET 10 SDK this machine doesn't have. It's blocked purely by the same unrelated GitHub
+push issue tracked since Phase 11. Worth being precise about that distinction rather than lumping
+every unverified thing into one bucket.
+
+### A real bug `actionlint` didn't catch, found by checking the obvious next thing anyway
+
+Both workflow files passed `actionlint` clean on the first write — but a clean *schema* check
+isn't the same claim as "this will actually run correctly," so the next thing worth checking was
+whether `./mvnw` (the `itsm-bridge` job, invoked on a Linux runner) would even be executable.
+`git ls-files -s src/itsm-bridge/mvnw` showed it tracked as `100644` — a plain, non-executable
+file, despite `mvnw` being a shell script Maven's own tooling generated. It's worked every time
+locally on this Windows machine because Windows doesn't consult the Unix executable bit at all —
+the gap was invisible here and would have failed with a plain "Permission denied" on the very
+first real Linux CI run. Fixed with `git update-index --chmod=+x`. A good, concrete example of why
+"the tool didn't flag anything" and "this is actually correct" are different claims, and why the
+right instinct is checking one level past what the validator covers, not stopping the moment it's
+green.
+
+### `.github/pull_request_template.md`
+
+ARCHITECTURE.md's skill table names "PR template + review checklist in `/docs/`" as the intended
+artifact for Agile/Scrum practice — placed at `.github/pull_request_template.md` instead, the
+location GitHub actually auto-populates a real PR description from. A working artifact in the
+right place beats a literally-followed suggestion when the two diverge, the same Table C instinct
+behind every other "better than the literal ask" choice already made in this project.
+
+### Common mistakes (and why this phase's code avoids them)
+
+1. **Defaulting every CI job to the same runner OS "for consistency."** Consistency isn't free
+   here — this project genuinely needs Windows for two different, real reasons (LocalDB, the
+   native shim's target platform) and Linux for a third (real Docker), and picking one OS for
+   everything would have silently broken or faked at least one of those.
+2. **Trusting a schema validator to mean "this will actually run."** `actionlint` catches
+   malformed YAML, bad expression syntax, and unknown action inputs — it has no way to know a
+   shell script referenced inside a job isn't executable on the runner that's about to invoke it.
+3. **Writing CI as if the local dev environment's constraints (no Docker, no GitHub push) are the
+   whole story.** The Docker workflow specifically would work once pushed — collapsing that into
+   "everything here is unverified" the same way as the Aspire AppHost's genuine SDK-version block
+   would understate what's actually true.
+
+### Interview questions this phase prepares you for
+
+- Why would you deliberately run different CI jobs on different operating systems in the same
+  workflow file, instead of picking one runner image for the whole pipeline?
+- What does a tool like `actionlint` actually check, and what categories of real failure does it
+  structurally have no way to catch?
+- Git tracks a file mode bit for the executable permission, but Windows doesn't have a Unix
+  executable bit at all — walk through exactly how that mismatch produces a CI failure that never
+  reproduces locally on a Windows dev machine.
+- Two jobs in `docker.yml` both build Docker images — why isn't that wasted, duplicated work?
+
+104/104 core .NET tests still passing, 8/8 Java, oxlint clean on `Beacon.WarRoom` — nothing in this
+phase touched application code, only CI configuration.
+
+---
+
+## Next: Phase 17 — Azure deployment (Bicep/ARM, no real deploy)
 
 Still open from earlier phases: Docker's daemon still isn't running (checked again this session —
-not even the process exists), so nothing containerized from this phase could be run/verified
-end-to-end, and Testcontainers (Phase 14) stays blocked too; **GitHub push is still blocked** —
-`git push` failed this session with "Repository not found" against
-`https://github.com/RamanaaS/Beacon.git`, so despite `git status` reporting "up to date with
-origin/main" (a stale/cached tracking ref, not proof of a successful push), the account-mismatch
-issue in GitHub Desktop is evidently still unresolved and every commit remains local-only — worth
-flagging loudly for Phase 16 specifically, since GitHub Actions CI/CD is meaningless without a
-GitHub remote to actually push to and trigger from; if a real Anthropic API key gets configured via
-user-secrets, do the one remaining live end-to-end call Phase 8's code is otherwise ready for; and
-the raw-GUID-actor UX gap from Phase 9 is still open (needs a real design decision, not a quick
-patch).
+not even the process exists), so nothing containerized can be run/verified end-to-end locally, and
+Testcontainers (Phase 14) stays blocked too; **GitHub push is still blocked** — `git push` failed
+this session with "Repository not found" against `https://github.com/RamanaaS/Beacon.git`, so
+despite `git status` reporting "up to date with origin/main" (a stale/cached tracking ref, not
+proof of a successful push), the account-mismatch issue in GitHub Desktop is evidently still
+unresolved and every commit remains local-only, which also means neither GitHub Actions workflow
+written this phase has ever actually triggered; no real Azure subscription/credentials are
+available in this environment either, so Phase 17's Bicep/ARM templates will be written and
+validated as far as local tooling allows (schema/what-if validation without real credentials) but
+not actually deployed; if a real Anthropic API key gets configured via user-secrets, do the one
+remaining live end-to-end call Phase 8's code is otherwise ready for; and the raw-GUID-actor UX gap
+from Phase 9 is still open (needs a real design decision, not a quick patch).
