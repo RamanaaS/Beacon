@@ -46,7 +46,16 @@ public sealed class RedisRecentAlertsStore : IRecentAlertsStore
                 ShouldHandle = new PredicateBuilder().Handle<RedisConnectionException>().Handle<RedisTimeoutException>(),
                 FailureRatio = 1.0,
                 MinimumThroughput = 2, // Polly v8's floor - a single call can't statistically open a circuit
-                SamplingDuration = TimeSpan.FromSeconds(1),
+                // Comfortably longer than a single failing call can take (connectTimeout=1000ms +
+                // syncTimeout=1000ms, but StackExchange.Redis's own internal retry/handshake
+                // mechanics can stretch one logical call well past that in practice — measured live
+                // at up to ~6.5s for the first failing call). Polly's circuit breaker only counts
+                // failures inside its current rolling window, so a window shorter than one failing
+                // call's real duration means two sequential failures can miss landing in the same
+                // window and the breaker never sees enough of them to open — the same
+                // misconfiguration found and fixed for ItsmBridgeClient's circuit breaker later
+                // this project (Phase 15), applied here too for the same reason.
+                SamplingDuration = TimeSpan.FromSeconds(10),
                 // 30s: long enough to stop hammering a Redis that's genuinely down, short enough
                 // that a real recovery (Docker finally starting, in this project's case) gets
                 // picked back up well within a demo/dev session rather than needing a restart.

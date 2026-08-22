@@ -60,10 +60,25 @@ public static class DependencyInjection
         // every declare/resolve call quietly paying the full retry budget before
         // ItsmTicketSyncHandler's catch block ever got a chance to swallow the failure.
         // itsm-bridge is a same-network internal service, not a dependency worth retrying hard for.
-        services.AddHttpClient<IItsmBridgeClient, ItsmBridgeClient>(client =>
+        //
+        // RemoveAllResilienceHandlers() first: Phase 15's Beacon.ServiceDefaults.AddServiceDefaults()
+        // calls ConfigureHttpClientDefaults(http => http.AddStandardResilienceHandler()), which
+        // applies its own untouched-default resilience pipeline to every HttpClient in the app,
+        // including this one. Without removing it first, the tuned pipeline below stacks *on top
+        // of* that untouched one instead of replacing it — measured live: 20s per call instead of
+        // the ~3s this same tuning produced before ServiceDefaults existed. Two resilience layers
+        // isn't "more resilient," it's the same latency bug from earlier this phase, reintroduced
+        // by a different piece of code.
+        var itsmBridgeClientBuilder = services.AddHttpClient<IItsmBridgeClient, ItsmBridgeClient>(client =>
             {
                 client.BaseAddress = new Uri(itsmSettings.BaseUrl);
-            })
+            });
+
+#pragma warning disable EXTEXP0001 // RemoveAllResilienceHandlers is experimental but is Microsoft's own documented
+                                    // way to reconfigure a client's pipeline instead of stacking a second one on top
+                                    // of ServiceDefaults' blanket default — see the comment above for why that matters.
+        itsmBridgeClientBuilder
+            .RemoveAllResilienceHandlers()
             .AddStandardResilienceHandler(options =>
             {
                 options.Retry.MaxRetryAttempts = 1;
@@ -75,11 +90,20 @@ public static class DependencyInjection
                 // + timeout cost independently instead of the circuit ever actually opening. Same
                 // "two failures is enough to know it's down" reasoning as RedisRecentAlertsStore's
                 // breaker earlier this phase.
-                options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(2);
+                //
+                // SamplingDuration has to be comfortably longer than TotalRequestTimeout, not just
+                // "some short value" — Polly's circuit breaker only counts failures inside its
+                // current rolling window. A 2s window against a request that can itself take up to
+                // 3s to fail meant two sequential failures almost never landed in the same window,
+                // so the breaker never saw 2 failures at once and never opened — measured live,
+                // every request kept independently paying the full ~3s instead of only the first
+                // couple. 10s comfortably covers several sequential failing requests.
+                options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(10);
                 options.CircuitBreaker.MinimumThroughput = 2;
                 options.CircuitBreaker.FailureRatio = 1.0;
                 options.CircuitBreaker.BreakDuration = TimeSpan.FromSeconds(30);
             });
+#pragma warning restore EXTEXP0001
     }
 
     private static void AddClaudeIntegration(this IServiceCollection services, IConfiguration configuration)
@@ -93,12 +117,19 @@ public static class DependencyInjection
         // a circuit breaker, and both a per-attempt and a total-request timeout — exactly the
         // resilience ARCHITECTURE.md named for "the LLM API call," a real external dependency
         // that can fail or rate-limit independently of Beacon itself.
+        // RemoveAllResilienceHandlers() before re-adding — see the identical comment in
+        // AddItsmBridgeIntegration for why: Beacon.ServiceDefaults.AddServiceDefaults() (Phase 15)
+        // already puts a default resilience handler on every HttpClient app-wide, so without
+        // removing it first this would double-stack rather than reconfigure.
+#pragma warning disable EXTEXP0001 // see AddItsmBridgeIntegration's identical suppression for why
         services.AddHttpClient<IPostmortemDraftGenerator, ClaudePostmortemDraftGenerator>(client =>
             {
                 client.BaseAddress = new Uri(claudeSettings.BaseUrl);
                 client.Timeout = TimeSpan.FromSeconds(30);
             })
+            .RemoveAllResilienceHandlers()
             .AddStandardResilienceHandler();
+#pragma warning restore EXTEXP0001
     }
 
     private static void AddAuthInfrastructure(this IServiceCollection services, IConfiguration configuration)

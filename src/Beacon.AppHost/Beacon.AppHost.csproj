@@ -1,0 +1,28 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.5.2">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Beacon.Api\Beacon.Api.csproj" />
+    <ProjectReference Include="..\frontend\Beacon.Admin\Beacon.Admin.csproj" />
+    <ProjectReference Include="..\Beacon.StatusPage\Beacon.StatusPage.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Aspire.Hosting.Redis" Version="13.5.2" />
+    <PackageReference Include="Aspire.Hosting.SqlServer" Version="13.5.2" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- The Aspire CLI-bundle run path (the scaffold's default) requires .NET SDK 10, which isn't
+         installed on this machine — every other project in this solution deliberately targets
+         .NET 9 for consistency, so this falls back to the older direct dotnet-run orchestration
+         (bundled DCP/dashboard NuGet packages) instead of also installing a second SDK major
+         version just for one project. -->
+    <AspireUseCliBundle>false</AspireUseCliBundle>
+    <UserSecretsId>31ed1111-9250-40ff-a70a-3c705114bef9</UserSecretsId>
+  </PropertyGroup>
+
+</Project>

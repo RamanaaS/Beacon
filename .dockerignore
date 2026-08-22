@@ -1,0 +1,12 @@
+**/bin/
+**/obj/
+**/node_modules/
+**/dist/
+!native/log-parser-shim/dist/
+**/target/
+**/.venv/
+**/verify-screenshots/
+.git/
+.vs/
+.idea/
+**/*.user

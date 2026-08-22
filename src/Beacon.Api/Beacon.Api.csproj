@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Beacon.Application\Beacon.Application.csproj" />
     <ProjectReference Include="..\Beacon.Infrastructure\Beacon.Infrastructure.csproj" />
+    <ProjectReference Include="..\Beacon.ServiceDefaults\Beacon.ServiceDefaults.csproj" />
   </ItemGroup>
 
   <ItemGroup>

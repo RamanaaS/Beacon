@@ -14,6 +14,14 @@ using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Aspire's ServiceDefaults (Phase 15) — OpenTelemetry tracing/metrics, service discovery, and
+// AddStandardResilienceHandler() on every outgoing HttpClient by default. Deliberately NOT calling
+// app.MapDefaultEndpoints() below: it maps /health itself, which would collide with the plain
+// custom /health endpoint this API has had since Phase 1. Wiring that custom endpoint into a real
+// ASP.NET Core HealthCheckMiddleware (checking SQL/Redis reachability, not just "the process is
+// up") is Phase 18's job, not a collision to paper over here.
+builder.AddServiceDefaults();
+
 // typeof(Program).Assembly added to the scan so MediatR also discovers notification handlers
 // that live in Beacon.Api itself (IncidentDeclaredNotificationHandler bridges to SignalR) — see
 // DependencyInjection.cs's own comment for why that handler can't live in Beacon.Application.

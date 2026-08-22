@@ -1,0 +1,100 @@
+# The "run everything with one command" path for anyone without .NET tooling installed, or a CI
+# pipeline — Beacon.AppHost (src/Beacon.AppHost) is the .NET-native equivalent a developer working
+# on this repo day to day would actually reach for. Both orchestrate the same real services; see
+# LEARNING_GUIDE.md's Phase 15 entry for why both exist rather than picking one.
+#
+# Validated with `docker compose config` (parses/resolves the file without needing a running
+# daemon) — not run end-to-end. Docker's daemon has never come up on this machine across the whole
+# project (LEARNING_GUIDE.md's Phase 3 and Phase 13 entries), so nothing below has actually been
+# started. RabbitMQ, named in ARCHITECTURE.md's tech list, is deliberately absent here too: no code
+# in this project actually uses it, so a container for it would be infrastructure for something
+# that doesn't exist yet, not a real dependency.
+
+services:
+  sql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      # A docker-compose-local-only password, same "not a real secret, don't reuse it anywhere
+      # real" spirit as Phase 7's JWT dev signing key placeholder - never used outside this file.
+      MSSQL_SA_PASSWORD: "Beacon_Docker_Dev_2026!"
+    ports:
+      - "1433:1433"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  itsm-bridge:
+    build:
+      context: src/itsm-bridge
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+
+  beacon-api:
+    build:
+      context: .
+      dockerfile: src/Beacon.Api/Dockerfile
+    ports:
+      # Published on the host specifically so Beacon.WarRoom's hardcoded browser-side
+      # http://localhost:5252 (src/api/client.ts) keeps working unmodified — see that Dockerfile's
+      # comment for the full reasoning.
+      - "5252:8080"
+    environment:
+      ConnectionStrings__BeaconDb: "Server=sql;Database=BeaconDb;User Id=sa;Password=Beacon_Docker_Dev_2026!;TrustServerCertificate=True"
+      # abortConnect/connectTimeout/syncTimeout params carried over from appsettings.json (Phase
+      # 13's Redis resilience fix) - see Beacon.AppHost/AppHost.cs's comment for why the AppHost
+      # path (Aspire's injected connection string) doesn't automatically get these the same way.
+      ConnectionStrings__Redis: "redis:6379,abortConnect=false,connectTimeout=1000,connectRetry=1,syncTimeout=1000"
+      ItsmBridge__BaseUrl: "http://itsm-bridge:8080"
+    depends_on:
+      sql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      itsm-bridge:
+        condition: service_started
+
+  beacon-admin:
+    build:
+      context: .
+      dockerfile: src/frontend/Beacon.Admin/Dockerfile
+    ports:
+      - "5121:8080"
+    environment:
+      BeaconApi__BaseUrl: "http://beacon-api:8080"
+    depends_on:
+      - beacon-api
+
+  beacon-statuspage:
+    build:
+      context: .
+      dockerfile: src/Beacon.StatusPage/Dockerfile
+    ports:
+      - "5146:8080"
+    environment:
+      BeaconApi__BaseUrl: "http://beacon-api:8080"
+    depends_on:
+      - beacon-api
+
+  beacon-warroom:
+    build:
+      context: src/frontend/Beacon.WarRoom
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      - beacon-api
