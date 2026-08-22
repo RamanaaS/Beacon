@@ -9,14 +9,17 @@ public static class AlertEndpoints
 {
     public static RouteGroupBuilder MapAlertEndpoints(this IEndpointRouteBuilder app)
     {
-        var group = app.MapGroup("/api/alerts").WithTags("Alerts");
+        var group = app.MapGroup("/api/alerts").WithTags("Alerts").RequireRateLimiting("alert-ingestion");
 
         // Deliberately not .RequireAuthorization() — the caller here is a monitoring tool
         // (Prometheus Alertmanager, in the real analog), not an interactive user with a login
         // flow. Machine-to-machine ingestion needs its own auth mechanism (an API key or mTLS
         // client cert bound to a service identity, not a JWT issued to a human who logged in) —
         // a real, different problem from Phase 7's user auth, deliberately left open rather than
-        // bolted on incorrectly just to make every endpoint uniformly "protected."
+        // bolted on incorrectly just to make every endpoint uniformly "protected." Phase 19 adds
+        // a per-IP rate limit (Program.cs's "alert-ingestion" policy) as the actual mitigation for
+        // having no auth here: it can't stop a determined attacker, but it caps how much load any
+        // single unauthenticated caller can put on this path.
         group.MapPost("/ingest", async (
                 IngestAlertCommand command,
                 ISender sender,

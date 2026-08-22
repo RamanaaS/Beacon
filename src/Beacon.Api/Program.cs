@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json.Serialization;
+using System.Threading.RateLimiting;
 using Beacon.Api.Alerts;
 using Beacon.Api.Auth;
 using Beacon.Api.Common;
@@ -12,6 +13,7 @@ using Beacon.Infrastructure.Auth;
 using Beacon.Infrastructure.Incidents;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 using Serilog.Context;
@@ -65,6 +67,28 @@ builder.Services.AddInfrastructure(builder.Configuration);
 // for the one endpoint that's explicitly supposed to be cheap to hammer: a public status page
 // with no login wall has no rate limit to lean on the way every authenticated endpoint does.
 builder.Services.AddOutputCache();
+
+// Phase 19: /api/alerts/ingest and /ingest-raw are deliberately unauthenticated (see
+// AlertEndpoints.cs's comment — no API key/mTLS mechanism exists yet for machine-to-machine
+// callers) which also means they're the one pair of endpoints in this API with no login wall an
+// attacker would have to get through first before hammering them. A rate limit is the pragmatic
+// stopgap: caps how much load one caller can put on IngestAlertCommandHandler (and, transitively,
+// the database and Redis dedup store) regardless of auth. Partitioned per client IP rather than
+// one global bucket, so one noisy/malicious caller can't exhaust the whole limit for everyone else
+// hitting the same endpoint.
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("alert-ingestion", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                Window = TimeSpan.FromMinutes(1),
+                PermitLimit = 60,
+                QueueLimit = 0
+            }));
+});
 
 builder.Services.AddSingleton<WebSocketConnectionManager>();
 builder.Services.AddHostedService<MetricsSimulatorService>();
@@ -158,6 +182,18 @@ if (app.Environment.IsDevelopment())
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+// Skipped under the integration-test host for the same reason as UseOutputCache below:
+// IntegrationTestCollection.cs shares one BeaconApiFactory (one in-process host, one rate
+// limiter instance) across the entire test collection, not one per test class. AlertEndpointsTests
+// alone calls /api/alerts/ingest-raw several times per run; with the limiter active, unrelated
+// tests elsewhere in the same collection accumulate against the same 60/min bucket and could start
+// failing with 429 depending on run order and timing — a flaky-test bug, not a real safeguard.
+// Real dev/production traffic always gets the limiter.
+if (!app.Environment.IsEnvironment("Testing"))
+{
+    app.UseRateLimiter();
+}
 
 // Skipped under the integration-test host: WebApplicationFactory reuses one in-process server
 // (and therefore one output-cache store) across every test in the collection, so a cached
