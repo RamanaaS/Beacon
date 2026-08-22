@@ -6,25 +6,27 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design, skill mapping, and p
 
 ## Status
 
-**Phase 17 done.** Full incident lifecycle (declare/acknowledge/resolve/escalate) behind JWT auth
+**Phase 18 done.** Full incident lifecycle (declare/acknowledge/resolve/escalate) behind JWT auth
 and role-based authorization, CQRS-orchestrated, Excel/PDF/AI-postmortem reporting, live WebSocket
 telemetry, a MediatR pub/sub bridge to SignalR for real-time incident broadcasts, four separate
 frontends against the same API (React+MobX `Beacon.WarRoom`, Electron `Beacon.OnCallConsole`,
 Blazor Server `Beacon.Admin`, MVC `Beacon.StatusPage`), three polyglot pieces (Java `itsm-bridge`,
 native C `log-parser-shim` via P/Invoke, Python `alert-simulator`), a testing-formalization pass
-(MSTest comparison, Selenium comparison, Postman/Newman alongside the primary xUnit/Playwright
-suites), containerization (five Dockerfiles + `docker-compose.yml`, plus a `.NET Aspire` AppHost
-whose dashboard was actually run and screenshotted), three GitHub Actions workflows plus a PR
-template (CI, a Docker/compose smoke test, and an Azure deploy pipeline — OIDC login, immutable
-SHA-tagged images, correctly sequenced against ACR's own chicken-and-egg bootstrap problem), and
-Bicep infrastructure for an Azure Container Apps deployment target (`infrastructure/`, compiled
-clean via `az bicep build` — no Azure subscription exists in this environment to deploy it
-against). 104/104 core .NET tests passing (79 backend + 24 MSTest + 1 Selenium), 8/8 Java tests,
-21/21 Postman requests via Newman. Docker's daemon has never come up on this machine across the
-whole project — not even the process runs — so Testcontainers and actually starting any container
-stay the one explicitly, honestly blocked area locally; the `docker.yml` workflow would genuinely
-work once pushed, since GitHub's own runners have real Docker.
-See [LEARNING_GUIDE.md](LEARNING_GUIDE.md) for what each phase teaches, concept by concept.
+(MSTest comparison, Selenium comparison, Postman/Newman), containerization (five Dockerfiles +
+`docker-compose.yml`, a `.NET Aspire` AppHost), three GitHub Actions workflows plus a PR template,
+Bicep infrastructure for an Azure Container Apps target, and observability (Serilog structured
+logging, a three-tier `/health`/`/alive`/`/health/detail` split so a real Redis outage degrades
+gracefully instead of pulling a working instance out of rotation, and correlation IDs tying every
+log line for one request to the same ID a trace would show). 107/107 core .NET tests passing
+(79 backend + 24 MSTest + 4 new health-check tests), 8/8 Java tests, 21/21 Postman requests via
+Newman. Docker's daemon has never come up on this machine across the whole project — not even the
+process runs — so Testcontainers and actually starting any container stay the one explicitly,
+honestly blocked area locally; the `docker.yml` workflow would genuinely work once pushed, since
+GitHub's own runners have real Docker.
+See [LEARNING_GUIDE.md](LEARNING_GUIDE.md) for what each phase teaches, concept by concept, and
+[docs/observability/diagnosing-a-slow-request.md](docs/observability/diagnosing-a-slow-request.md)
+for a real (not hypothetical) worked example of using this project's own logging/correlation-ID
+setup to find and fix an actual bug.
 
 ## Prerequisites
 

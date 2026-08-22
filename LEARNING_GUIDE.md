@@ -1998,7 +1998,126 @@ already-verified frontend remain exactly as they were after Phase 16.
 
 ---
 
-## Next: Phase 18 — Observability (Serilog, OpenTelemetry, health checks, correlation IDs)
+## Phase 18 — Observability (Serilog, OpenTelemetry, health checks, correlation IDs)
+
+**Status: done, fully live-verified — and it's the phase that caught the most bugs relative to
+its size.** Structured logging, a real three-tier health check design, and correlation IDs tying
+logs to traces, all checked against this environment's one genuine, permanent failure condition
+(Redis has been down for this entire project) rather than a clean happy path that would have
+hidden every one of these.
+
+### Serilog — and a real, load-bearing cleanup that fell out of it for free
+
+`builder.Host.UseSerilog(...)` reads sinks/levels from `appsettings.json`'s new `"Serilog"`
+section (`Serilog.Settings.Configuration`) — Console plus a rolling daily file sink
+(`logs/beacon-api-.log`, gitignored, 7-day retention) — rather than hardcoding either in
+`Program.cs`. `UseSerilogRequestLogging()` adds one structured summary line per request (method,
+path, status, elapsed ms) on top of whatever each endpoint logs itself. One overridden log level
+turned out to matter more than expected: `Microsoft.EntityFrameworkCore.Database.Command` had been
+logging the full text of every SQL statement at Information level since Phase 2 — every terminal
+transcript in this project's whole history has scroll after scroll of raw `SELECT`/`INSERT`
+statements as a result. Set to `Warning` here, and the console output for the first time in this
+project is actually readable at a glance instead of drowned in query text nobody was asking for.
+
+### Health checks — a real three-tier split, not "check everything, gate on everything"
+
+The obvious design (register SQL and Redis checks, let either failure flip `/health` to 503) would
+have directly undone Phase 13's whole point: `RedisRecentAlertsStore` was built specifically to
+keep serving requests when Redis is down, and a health check that pulled a working instance out of
+load-balancer rotation over that exact, deliberately-tolerated condition would be actively
+counterproductive. So the checks are tagged and routed on purpose:
+
+- **`/health`** (readiness — what a load balancer/Container Apps probe polls) — only "ready"-tagged
+  checks gate it. Only SQL is tagged "ready": if the database is unreachable this API genuinely
+  can't serve most requests, so 503 here is correct and should stop traffic.
+- **`/alive`** (liveness — "is the process itself responsive") — only the trivial "live"-tagged
+  self-check. Never gated on a downstream dependency, because restarting this process would do
+  nothing to fix a down SQL Server or Redis.
+- **`/health/detail`** — every registered check, no predicate. The diagnostic view a human or a
+  dashboard actually wants, as opposed to the narrow yes/no `/health`/`/alive` exist for.
+
+**A real gap, found by actually calling all three endpoints instead of trusting the design on
+paper:** `HealthCheckOptions.Predicate` doesn't just decide which checks *gate* an endpoint's
+status — it decides which checks even *run* for that request at all. The first live check of
+`/health` and `/alive` showed Redis missing from *both* response bodies entirely, not just
+excluded from their pass/fail math — exactly the "look at the actual output, don't assume the
+design worked" discipline this project has followed since Phase 9's raw-GUID-actor screenshot
+catch. `/health/detail` exists specifically to fix that: the one endpoint where Redis's real,
+degraded status is actually visible.
+
+**Verified against this machine's genuinely-down Redis, live, not hypothetically:**
+
+```
+/health         -> 200 {"status":"Healthy",  "checks":[{"name":"sql","status":"Healthy"}]}
+/alive          -> 200 {"status":"Healthy",  "checks":[{"name":"self","status":"Healthy"}]}
+/health/detail  -> 503 {"status":"Unhealthy","checks":[
+                     {"name":"self","status":"Healthy"},
+                     {"name":"sql","status":"Healthy"},
+                     {"name":"redis","status":"Unhealthy"}]}
+```
+
+Exactly the intended behavior: a load balancer polling `/health` keeps routing traffic here
+throughout a real Redis outage (correct — the app is designed to tolerate exactly this), while
+`/health/detail` still makes the degradation fully visible to anything actually looking for it.
+
+### Correlation IDs — and a middleware-ordering bug caught by reading the real log output, not the code
+
+A small middleware pushes the request's real W3C trace ID (`Activity.Current?.TraceId` — the same
+ID OpenTelemetry's own spans use, deliberately not a separately-invented ID) into Serilog's
+`LogContext`, so every log line during a request carries the identical ID a trace would show —
+the actual point of a correlation ID: "grep the logs for this ID" and "look up this trace" land on
+the same events.
+
+The first version registered this middleware *after* `app.UseSerilogRequestLogging()`. ASP.NET
+Core middleware registered earlier wraps everything registered later, so `UseSerilogRequestLogging`
+was the *outer* layer — its own summary log line fires on the way back out of the pipeline, by
+which point the inner correlation-id middleware's `using (LogContext.PushProperty(...))` scope had
+already closed. Every other log line during a request correctly carried the correlation ID; the
+one line most likely to be searched for first — "HTTP GET /x responded 503 in Nms" — consistently
+didn't. Caught by reading the actual console output line by line after triggering a real Redis
+failure, not by reasoning about the code in the abstract. Fixed by reordering: the correlation-id
+middleware now wraps `UseSerilogRequestLogging`, not the other way around.
+
+### `docs/observability/diagnosing-a-slow-request.md`
+
+ARCHITECTURE.md names a "diagnose a slow request" walkthrough as something to be able to talk
+through directly. Written as the *real* Phase 13 investigation (11.5-second Redis calls, found by
+timing a live request, traced through to the root cause, fixed, and — twice — re-broken and
+re-fixed in Phase 15) retold from the "how would you even start" side rather than a hypothetical
+scenario invented for the occasion.
+
+### Common mistakes (and why this phase's code avoids them)
+
+1. **Gating an aggregate health status on every registered check by default.** The "obvious" design
+   here would have silently undone a real, deliberate resilience decision from three phases
+   earlier — health checks need to know *which* dependencies the application actually requires to
+   function versus which ones it was built to tolerate losing.
+2. **Assuming a `Predicate` only filters an endpoint's pass/fail computation.** It filters which
+   checks execute *at all* for that request — a check excluded by a predicate doesn't appear in the
+   response body either, easy to miss until you actually look at the JSON.
+3. **Reasoning about middleware ordering instead of testing it.** "Registered before" vs.
+   "registered after" in ASP.NET Core determines inner/outer wrapping, and a scoping bug in that
+   ordering doesn't throw an exception or fail a test — it just quietly omits data from one specific
+   log line, the kind of gap that's invisible unless someone actually reads the output.
+
+### Interview questions this phase prepares you for
+
+- Walk through the actual difference between liveness and readiness health checks, with a concrete
+  example of a dependency that should gate one but not the other — and why getting that backwards
+  is actively harmful, not just imprecise.
+- Why does registering middleware in a different order change what a `using` block around
+  `next()` can and can't still affect by the time an outer middleware runs its own code?
+- What does a correlation ID actually need to be shared with (traces, other services, a frontend)
+  for it to be useful, versus just being "a random ID logged with each request"?
+- Given a slow request in production with no test coverage flagging it, walk through the concrete
+  steps you'd take before writing a single line of code to fix anything.
+
+107/107 core .NET tests passing (79 already-existing + 24 MSTest + 4 new health-check integration
+tests), 8/8 Java tests — a net gain in coverage, not just a feature addition.
+
+---
+
+## Next: Phase 19 — Hardening / failure scenarios
 
 Still open from earlier phases: Docker's daemon still isn't running (checked again this session —
 not even the process exists), so nothing containerized can be run/verified end-to-end locally, and
