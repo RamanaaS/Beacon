@@ -1897,7 +1897,108 @@ phase touched application code, only CI configuration.
 
 ---
 
-## Next: Phase 17 — Azure deployment (Bicep/ARM, no real deploy)
+## Phase 17 — Azure deployment (Bicep, no real subscription to deploy against)
+
+**Status: written, compiled, never deployed.** No Azure subscription or credentials exist in this
+environment — `az account show` confirms no login is even possible here — so `az deployment group
+validate`/`what-if` (which both need a real subscription context) were never options. What *was*
+available and genuinely used: `az bicep build`, pure local compilation from Bicep to ARM JSON with
+zero subscription dependency, which caught two real errors before either could have shown up as a
+confusing failure mid-deployment.
+
+### Container Apps, not "App Service/AKS" — a deliberate deviation, not a scope-down
+
+ARCHITECTURE.md's own table names "App Service/AKS" as the deployment target. `infrastructure/`
+uses Azure Container Apps instead, and it's worth being precise about why this is a considered
+Table C-style choice, not avoidance of the harder options: Container Apps is the direct next step
+from Phase 15's five Docker images — the same images `docker-compose.yml` already builds deploy
+here completely unmodified. It gets a managed, Kubernetes-grade platform (autoscale, revisions,
+`http://<app-name>` internal service discovery — the exact same by-name addressing pattern
+`docker-compose.yml` already uses) without hand-authoring an AKS cluster's node pools, upgrade
+policy, and ingress controller, real operational surface this project's actual scale doesn't
+justify. App Service would have needed a different deployment story per app (zip-deploy vs.
+container) instead of one consistent path for all five.
+
+Same "don't provision what nothing calls" discipline as `docker-compose.yml`'s missing RabbitMQ
+service: Service Bus, named in ARCHITECTURE.md's tech list, is absent from `main.bicep` too — no
+code in this project has ever actually used a message queue.
+
+### Two real bugs `az bicep build` caught — a language limitation and a dead parameter
+
+- **`BCP124`: `@secure()` cannot decorate an `array`-typed parameter, only `string`/`object`.** The
+  reusable `container-app.bicep` module's `secrets` parameter (Container Apps' own `{name, value}`
+  secrets array) was written `@secure()` on instinct — every other sensitive value in this project
+  gets that decorator — and the compiler flatly rejected it. This is a genuine, slightly obscure
+  Bicep language constraint, not a style objection: `@secure()` only works on the two types Azure's
+  deployment history redaction actually knows how to mask. Fixed by removing the decorator from
+  the array itself and documenting explicitly what still protects these values in practice —
+  Container Apps' own server-side secret encryption, plus the fact the values originate from
+  `sqlAdminPassword`/`claudeApiKey`, which *are* correctly marked `@secure()` at the one point
+  Bicep actually supports it (their string parameters in `main.bicep`).
+- **`no-unused-params`: a `registryId` parameter that looked necessary but wasn't.** Passed into
+  the module reflexively (an `AcrPull` role assignment needs the registry's resource ID, so it
+  felt like the module would need it too) — but the role assignments actually live in
+  `main.bicep`, scoped directly against the `registry` resource there, never inside the module.
+  The module only ever needed `registryLoginServer` (a string, for building the image reference).
+  Removed rather than left in "just in case" — an unused parameter in infrastructure code is a
+  question a future reader has to stop and answer, not free flexibility.
+
+### An ordering bug the compiler *couldn't* catch, found by actually reasoning through `deploy.yml`
+
+`az bicep build` only validates one template file in isolation — it has no way to know anything
+about deployment *sequencing* across a multi-step pipeline. Writing `.github/workflows/deploy.yml`
+(build images → push to ACR → deploy infrastructure) surfaced a real chicken-and-egg problem the
+compiler was structurally incapable of flagging: the Container Registry doesn't exist until
+`main.bicep` deploys it, so a `build-and-push` job that runs *before* the infrastructure deploy
+would try to push into a registry that doesn't exist yet. Fixed by reordering into three jobs, in
+this specific sequence, for a specific reason each: `deploy-infrastructure` runs first (Azure's
+Container Apps deployment succeeds at the control-plane level even referencing a not-yet-existing
+image tag — only the resulting revision ends up unhealthy, not the deployment itself); then
+`build-and-push` builds each image tagged by commit SHA (immutable, traceable to a real commit,
+not a mutable `:latest` nobody can pin a rollback to); then `update-apps` explicitly points each
+Container App at that SHA tag via `az containerapp update`, since Container Apps has no mechanism
+that would notice a mutated `:latest` tag on its own. A good, concrete example of a class of bug
+that only shows up by tracing the actual sequence of operations end to end — no single file's
+schema validation was ever going to catch a three-job ordering dependency.
+
+`deploy.yml` also uses OIDC federated login (`azure/login` with client-id/tenant-id/subscription-
+id) rather than a long-lived `AZURE_CREDENTIALS` JSON secret — the credential-less pattern Azure's
+own current guidance recommends, a real improvement over what most "Azure + GitHub Actions"
+tutorials still show, and worth doing correctly even in a workflow that (like everything CI/CD in
+this project) has never actually triggered.
+
+### Common mistakes (and why this phase's code avoids them)
+
+1. **Applying a security-hygiene decorator reflexively without checking it's actually supported
+   for the type it's being applied to.** `@secure()` "should" apply to any sensitive value in
+   principle — Bicep's actual type support is narrower than that instinct, and the compiler is the
+   only reliable way to find the boundary.
+2. **Leaving an unused parameter in place because removing it feels riskier than keeping it.** A
+   parameter nothing reads is a question, not insurance — `no-unused-params` exists precisely to
+   surface exactly this.
+3. **Assuming a template that compiles cleanly means the *pipeline* around it is correct.**
+   `az bicep build` proves one file's internal consistency; it has no visibility into a multi-job
+   workflow's execution order, which is exactly where the ACR chicken-and-egg bug was hiding.
+
+### Interview questions this phase prepares you for
+
+- Why would Azure Container Apps genuinely make more sense than AKS for a project at Beacon's
+  scale — what operational cost does AKS carry that Container Apps doesn't, and when would that
+  trade flip?
+- Walk through exactly why `@secure()` can't be applied to an array parameter in Bicep, and what
+  actually protects secret *values* inside such an array once they reach the deployed resource.
+- What's the real difference between "this ARM template is internally valid" (`az bicep build` /
+  `validate`) and "this deployment will actually succeed" (`what-if` or a real apply) — what kinds
+  of problems can only the second one catch?
+- Why tag container images by commit SHA instead of `:latest` in a real deployment pipeline — what
+  specifically breaks (or becomes hard) if you don't?
+
+No application code changed this phase — 104/104 core .NET tests, 8/8 Java tests, and every
+already-verified frontend remain exactly as they were after Phase 16.
+
+---
+
+## Next: Phase 18 — Observability (Serilog, OpenTelemetry, health checks, correlation IDs)
 
 Still open from earlier phases: Docker's daemon still isn't running (checked again this session —
 not even the process exists), so nothing containerized can be run/verified end-to-end locally, and
@@ -1905,10 +2006,7 @@ Testcontainers (Phase 14) stays blocked too; **GitHub push is still blocked** �
 this session with "Repository not found" against `https://github.com/RamanaaS/Beacon.git`, so
 despite `git status` reporting "up to date with origin/main" (a stale/cached tracking ref, not
 proof of a successful push), the account-mismatch issue in GitHub Desktop is evidently still
-unresolved and every commit remains local-only, which also means neither GitHub Actions workflow
-written this phase has ever actually triggered; no real Azure subscription/credentials are
-available in this environment either, so Phase 17's Bicep/ARM templates will be written and
-validated as far as local tooling allows (schema/what-if validation without real credentials) but
-not actually deployed; if a real Anthropic API key gets configured via user-secrets, do the one
-remaining live end-to-end call Phase 8's code is otherwise ready for; and the raw-GUID-actor UX gap
+unresolved and every commit remains local-only, meaning neither the Phase 16 GitHub Actions
+workflows nor Phase 17's Azure deploy workflow has ever actually triggered; no real Anthropic API
+key or Azure subscription is available in this environment either; and the raw-GUID-actor UX gap
 from Phase 9 is still open (needs a real design decision, not a quick patch).

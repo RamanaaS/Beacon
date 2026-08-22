@@ -6,7 +6,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design, skill mapping, and p
 
 ## Status
 
-**Phase 16 done.** Full incident lifecycle (declare/acknowledge/resolve/escalate) behind JWT auth
+**Phase 17 done.** Full incident lifecycle (declare/acknowledge/resolve/escalate) behind JWT auth
 and role-based authorization, CQRS-orchestrated, Excel/PDF/AI-postmortem reporting, live WebSocket
 telemetry, a MediatR pub/sub bridge to SignalR for real-time incident broadcasts, four separate
 frontends against the same API (React+MobX `Beacon.WarRoom`, Electron `Beacon.OnCallConsole`,
@@ -14,15 +14,16 @@ Blazor Server `Beacon.Admin`, MVC `Beacon.StatusPage`), three polyglot pieces (J
 native C `log-parser-shim` via P/Invoke, Python `alert-simulator`), a testing-formalization pass
 (MSTest comparison, Selenium comparison, Postman/Newman alongside the primary xUnit/Playwright
 suites), containerization (five Dockerfiles + `docker-compose.yml`, plus a `.NET Aspire` AppHost
-whose dashboard was actually run and screenshotted), and two GitHub Actions workflows plus a PR
-template — schema-validated with `actionlint`, matching commands already proven locally, but never
-triggered: this repo has been local-only its entire history (a GitHub Desktop account-mismatch
-issue tracked since Phase 11). 104/104 core .NET tests passing (79 backend + 24 MSTest +
-1 Selenium), 8/8 Java tests, 21/21 Postman requests via Newman. Docker's daemon has never come up
-on this machine across the whole project — not even the process runs — so Testcontainers and
-actually starting any container stay the one explicitly, honestly blocked area locally; the
-`docker.yml` workflow would genuinely work once pushed, since GitHub's own runners have real
-Docker.
+whose dashboard was actually run and screenshotted), three GitHub Actions workflows plus a PR
+template (CI, a Docker/compose smoke test, and an Azure deploy pipeline — OIDC login, immutable
+SHA-tagged images, correctly sequenced against ACR's own chicken-and-egg bootstrap problem), and
+Bicep infrastructure for an Azure Container Apps deployment target (`infrastructure/`, compiled
+clean via `az bicep build` — no Azure subscription exists in this environment to deploy it
+against). 104/104 core .NET tests passing (79 backend + 24 MSTest + 1 Selenium), 8/8 Java tests,
+21/21 Postman requests via Newman. Docker's daemon has never come up on this machine across the
+whole project — not even the process runs — so Testcontainers and actually starting any container
+stay the one explicitly, honestly blocked area locally; the `docker.yml` workflow would genuinely
+work once pushed, since GitHub's own runners have real Docker.
 See [LEARNING_GUIDE.md](LEARNING_GUIDE.md) for what each phase teaches, concept by concept.
 
 ## Prerequisites
@@ -35,6 +36,25 @@ See [LEARNING_GUIDE.md](LEARNING_GUIDE.md) for what each phase teaches, concept 
 - gcc (MinGW-w64/UCRT) only if you want to rebuild `native/log-parser-shim` yourself — the built
   `dist/log_parser_shim.dll` is committed, so this isn't required just to run the solution
 - Python 3 for `tools/alert-simulator`
+- [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) + its Bicep extension
+  (`az bicep install`) only if you want to compile/validate `infrastructure/main.bicep` yourself —
+  not required to run anything else in this repo
+
+## Deploying to Azure
+
+Written and locally compiled (`az bicep build`) but never deployed — no Azure subscription exists
+in this environment. See `infrastructure/main.bicep` and `.github/workflows/deploy.yml` for the
+full design (Azure Container Apps, ACR, Azure SQL, Azure Cache for Redis, Key Vault, Log
+Analytics/App Insights) and LEARNING_GUIDE.md's Phase 17 entry for what was and wasn't verifiable
+without real credentials.
+
+```
+az group create --name beacon-dev-rg --location eastus
+az deployment group create \
+  --resource-group beacon-dev-rg \
+  --template-file infrastructure/main.bicep \
+  --parameters environmentName=dev sqlAdminPassword=<your-password>
+```
 
 ## Running it
 
