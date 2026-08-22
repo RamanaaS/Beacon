@@ -6,19 +6,20 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design, skill mapping, and p
 
 ## Status
 
-**Phase 14 done** (Testcontainers excepted — blocked on Docker, see below). Full incident
-lifecycle (declare/acknowledge/resolve/escalate) behind JWT auth and role-based authorization,
-CQRS-orchestrated, Excel/PDF/AI-postmortem reporting, live WebSocket telemetry, a MediatR pub/sub
-bridge to SignalR for real-time incident broadcasts, four separate frontends against the same API
-(React+MobX `Beacon.WarRoom`, Electron `Beacon.OnCallConsole`, Blazor Server `Beacon.Admin`, MVC
-`Beacon.StatusPage`), three polyglot pieces (Java `itsm-bridge`, native C `log-parser-shim` via
-P/Invoke, Python `alert-simulator`), and a testing-formalization pass adding an MSTest comparison
-suite, a Selenium comparison E2E suite, and a Postman/Newman API collection alongside the primary
-xUnit/Playwright suites. 79/79 core backend tests passing (~18s), plus 24/24 MSTest, 1/1 Selenium,
-8/8 Java, and 21/21 Postman requests via Newman. Docker's daemon has never come up on this machine
-across the whole project, so Testcontainers and Phase 15's Docker/Aspire work are the one
-explicitly blocked area — everything else in this project runs and is verified live, not just
-compiled.
+**Phase 15 done.** Full incident lifecycle (declare/acknowledge/resolve/escalate) behind JWT auth
+and role-based authorization, CQRS-orchestrated, Excel/PDF/AI-postmortem reporting, live WebSocket
+telemetry, a MediatR pub/sub bridge to SignalR for real-time incident broadcasts, four separate
+frontends against the same API (React+MobX `Beacon.WarRoom`, Electron `Beacon.OnCallConsole`,
+Blazor Server `Beacon.Admin`, MVC `Beacon.StatusPage`), three polyglot pieces (Java `itsm-bridge`,
+native C `log-parser-shim` via P/Invoke, Python `alert-simulator`), a testing-formalization pass
+(MSTest comparison, Selenium comparison, Postman/Newman alongside the primary xUnit/Playwright
+suites), and containerization (five Dockerfiles + `docker-compose.yml`, plus a `.NET Aspire`
+AppHost whose dashboard was actually run and screenshotted — correctly showing every resource
+blocked on the one real constraint this environment has). 104/104 core .NET tests passing
+(79 backend + 24 MSTest + 1 Selenium), 8/8 Java tests, 21/21 Postman requests via Newman. Docker's
+daemon has never come up on this machine across the whole project — not even the process runs —
+so Testcontainers and actually starting any container stay the one explicitly, honestly blocked
+area; everything else in this project runs and is verified live, not just compiled.
 See [LEARNING_GUIDE.md](LEARNING_GUIDE.md) for what each phase teaches, concept by concept.
 
 ## Prerequisites
@@ -77,6 +78,24 @@ python -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
 .\.venv\Scripts\python alert_simulator.py --count 20 --rate 5
 .\.venv\Scripts\python alert_simulator.py --dedup-demo
+```
+
+## Running everything at once (Docker, or .NET Aspire)
+
+Neither path has been run end-to-end on the machine this was built on — Docker's daemon has never
+come up here (see LEARNING_GUIDE.md's Phase 3/13/15 entries). Both are written and, for the Aspire
+path, partially verified (the dashboard itself runs and correctly shows every container-backed
+resource blocked on Docker).
+
+```
+# Everything via Docker Compose
+docker compose up --build
+
+# Everything via .NET Aspire (needs the Aspire CLI: https://aspire.dev, and the same "no Docker
+# means the sql/redis container resources can't actually come up" caveat)
+cd src\Beacon.AppHost
+dotnet run
+# Dashboard at the printed https://localhost:<port> URL
 ```
 
 ## Running the API test collection (Postman/Newman)

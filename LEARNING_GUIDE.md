@@ -1678,15 +1678,143 @@ same value. Rerun clean: 21/21 requests, 30/30 assertions.
 
 ---
 
-## Next: Phase 15 — Docker + .NET Aspire
+## Phase 15 — Docker + .NET Aspire
+
+**Status: done, further than expected.** Docker's daemon has never come up on this machine across
+this whole project — not even the process is running, let alone the engine — so nothing here could
+be run end-to-end the way every earlier phase's frontend was Playwright-verified. What actually
+happened instead: writing this phase surfaced two real, live-timed regressions in resilience code
+this project had already fixed once, and the Aspire AppHost got further than "written but never
+run" — its dashboard genuinely started and correctly showed the exact failure this whole phase is
+about.
+
+### `docker-compose.yml` + five Dockerfiles
+
+Multi-stage builds for all five containerizable pieces: `Beacon.Api`, `Beacon.Admin`,
+`Beacon.StatusPage` (all .NET SDK → ASP.NET runtime), `Beacon.WarRoom` (Node → nginx, with an
+`nginx.conf` `try_files` fallback so a hard refresh on a client-side route like `/incidents/{id}`
+doesn't 404), and `itsm-bridge` (Temurin JDK → JRE). `Beacon.OnCallConsole` deliberately has none —
+it's an Electron desktop app, not a server process, and doesn't belong in a container at all.
+RabbitMQ, named in ARCHITECTURE.md's tech list, is deliberately absent from the compose file too:
+no code in this project actually calls it, so a container for it would be infrastructure for
+something that was never built, not a real dependency being containerized.
+
+Two things worth naming as real, considered decisions rather than oversights:
+
+- **`native/log-parser-shim`'s Windows-built DLL won't load in the Linux container** —
+  `log_parser_shim.dll` is a MinGW-built Windows PE (Phase 13). `/api/alerts/ingest-raw` would be
+  the one endpoint affected in a real deployment of this Dockerfile; a Linux `.so` counterpart is
+  real, buildable, deferred work — and, like everything else in this phase, couldn't be verified
+  in an environment with no working Docker daemon to test a Linux container against anyway.
+- **`Beacon.WarRoom`'s API base URL is still hardcoded** to `http://localhost:5252`
+  (`src/api/client.ts`, unchanged since Phase 9) rather than read from a build-time Vite env var.
+  It still works from `docker-compose.yml` specifically because `beacon-api`'s container publishes
+  port 5252 on the host — the SPA runs in the *browser*, not inside the Docker network, so the
+  browser reaches that published port directly. Fixed at the compose layer (a port mapping) rather
+  than by touching already-shipped, tested Phase 9 code for a Docker-specific benefit that — again
+  — has no way to be verified live here.
+
+Verified the only way actually available without a daemon: `docker compose config` parses and
+fully resolves the file (env-var substitution, `depends_on` health conditions, network wiring)
+without needing Docker running at all — a real, meaningful check that the compose file itself is
+correct, short of actually starting containers.
+
+### `Beacon.AppHost` (.NET Aspire) — and it genuinely ran further than expected
+
+`AddServiceDefaults()` (OpenTelemetry, service discovery, a default resilience handler on every
+`HttpClient`) got wired into `Beacon.Api`. The AppHost declares SQL Server and Redis as real Aspire
+container resources and orchestrates `Beacon.Api`/`Beacon.Admin`/`Beacon.StatusPage` as project
+references with `WaitFor` dependency ordering. Getting to that point took clearing two genuine,
+undocumented-in-any-obvious-place environment hurdles: the newest Aspire template (13.5.2)'s
+default CLI-bundle run path requires .NET SDK 10, not installed here (fixed by setting
+`AspireUseCliBundle=false` to fall back to the older direct `dotnet run` orchestration model,
+keeping the whole solution consistently on .NET 9 rather than adding a second SDK major version
+for one project); and the Aspire dashboard's own Kestrel HTTPS endpoint failed to start with no
+trusted dev certificate (fixed with `dotnet dev-certs https --trust`).
+
+**With both cleared, the AppHost actually started** — its dashboard came up at
+`https://localhost:17060`, and a real Playwright screenshot (`verify-screenshots/aspire-dashboard-
+docker-down.png`) shows exactly the expected, correct state: Redis and `sql` marked "Runtime
+unhealthy" (Docker's daemon confirmed unhealthy/unreachable, logged explicitly by Aspire itself),
+`BeaconDb` unhealthy in turn, and `beacon-admin`/`beacon-api`/`beacon-statuspage` all sitting in
+"Waiting" — correctly blocked by their own `WaitFor(sql)`/`WaitFor(redis)`/`WaitFor(api)`
+declarations, never even attempting to start. That's not a failure to write off — it's the
+orchestration logic working exactly as designed, given the one real constraint this environment
+actually has. This is meaningfully more verification than "the C# compiles": it's proof the
+dependency graph, health detection, and startup gating are all real and correct.
+
+### Two resilience regressions, found the same way as Phase 13's — by timing live requests
+
+**1. `AddServiceDefaults()`'s blanket resilience handler double-stacked with the tuned handlers
+Phase 13 already built.** `ConfigureHttpClientDefaults(http => http.AddStandardResilienceHandler())`
+applies its own untouched-default pipeline to *every* `HttpClient` in the app — including the
+Claude and `ItsmBridgeClient` clients that already had their own carefully-tuned pipelines from
+Phase 13. `.AddStandardResilienceHandler()` is additive, not a replacement, so both clients ended
+up with two resilience layers stacked on one request. Measured live: an ITSM-touching declare call
+that used to cost ~3s (Phase 13's fix) jumped to **20 seconds**. Fixed with
+`.RemoveAllResilienceHandlers()` (an experimental-but-Microsoft-documented API, suppressed via
+`#pragma warning disable EXTEXP0001` with an explanatory comment) before re-adding each client's
+own tuned pipeline — replacing the blanket default instead of stacking on top of it.
+
+**2. Even after de-duplicating the handler, the circuit breaker still didn't trip** — a second,
+independent bug in the *same* code path, not a residue of the first. `SamplingDuration` was
+shorter than a single failing request's own worst-case duration (a 2-second window against calls
+that could themselves take up to 3 seconds to fail). Polly's circuit breaker only counts failures
+inside its *current* rolling window — if one failing call already spans longer than the window,
+two sequential failures can each land in a different window and the breaker never accumulates
+enough failures to open. Every request kept independently paying the full cost instead of only the
+first couple. Fixed by widening `SamplingDuration` to 10 seconds — comfortably longer than any
+single call could take — for both `ItsmBridgeClient`'s breaker and (applying the same fix
+proactively, not waiting to hit it a third time) `RedisRecentAlertsStore`'s breaker from Phase 13,
+which had the identical latent misconfiguration.
+
+Both fixes were verified the only way that actually proves anything here: timing real sequential
+requests against the actually-running app, not reading the config and assuming it was fine.
+
+### Common mistakes (and why this phase's code avoids them)
+
+1. **Assuming a platform's "batteries included" defaults compose safely with code you already
+   tuned.** `AddServiceDefaults()` is genuinely useful, but its blanket `HttpClient` resilience
+   handler silently stacked on top of two already-tuned pipelines instead of being superseded by
+   them — the kind of interaction that only shows up by actually timing a request, never by
+   reading either piece of code in isolation.
+2. **Sizing a circuit breaker's failure-detection window without checking it against the actual
+   worst-case latency of the calls it's watching.** A sampling window shorter than one call's own
+   possible duration means the breaker can never see two failures in the same window — it's not
+   "too aggressive" or "too lax," it's silently non-functional.
+3. **Treating "the code compiles" as proof an orchestration tool works.** The AppHost's real value
+   in this phase came from actually running it and reading the dashboard, not from `dotnet build`
+   succeeding — a `WaitFor` graph that's never been started is just an untested claim.
+
+### Interview questions this phase prepares you for
+
+- Walk through exactly why calling `.AddStandardResilienceHandler()` twice on paths that both
+  apply to the same `HttpClient` doesn't produce "twice the resilience" — what actually happens to
+  the request?
+- What's the relationship between a circuit breaker's sampling window and the latency of the calls
+  it's protecting — what specifically goes wrong if the window is too short?
+- What does `.WithReference(x).WaitFor(x)` actually buy you in an Aspire AppHost, concretely — walk
+  through what would happen on startup without it.
+- Docker Compose vs. .NET Aspire's AppHost — genuinely different tools solving overlapping
+  problems, or the same tool twice? What would make you reach for one over the other on a real team?
+
+104/104 core .NET tests still passing (79 backend + 24 MSTest + 1 Selenium, needing live services),
+8/8 Java tests, 21/21 Postman requests — none of this phase's changes broke anything already
+verified working.
+
+---
+
+## Next: Phase 16 — CI/CD (GitHub Actions)
 
 Still open from earlier phases: Docker's daemon still isn't running (checked again this session —
-not even the process exists, so this phase's actual containers can be written but not run/
-verified) — Testcontainers (Phase 14) and Phase 15's Docker/.NET Aspire work both stay blocked on
-that; **GitHub push is still blocked** — `git push` failed this session with "Repository not
-found" against `https://github.com/RamanaaS/Beacon.git`, so despite `git status` reporting "up to
-date with origin/main" (a stale/cached tracking ref, not proof of a successful push), the
-account-mismatch issue in GitHub Desktop is evidently still unresolved and every commit remains
-local-only; if a real Anthropic API key gets configured via user-secrets, do the one remaining live
-end-to-end call Phase 8's code is otherwise ready for; and the raw-GUID-actor UX gap from Phase 9
-is still open (needs a real design decision, not a quick patch).
+not even the process exists), so nothing containerized from this phase could be run/verified
+end-to-end, and Testcontainers (Phase 14) stays blocked too; **GitHub push is still blocked** —
+`git push` failed this session with "Repository not found" against
+`https://github.com/RamanaaS/Beacon.git`, so despite `git status` reporting "up to date with
+origin/main" (a stale/cached tracking ref, not proof of a successful push), the account-mismatch
+issue in GitHub Desktop is evidently still unresolved and every commit remains local-only — worth
+flagging loudly for Phase 16 specifically, since GitHub Actions CI/CD is meaningless without a
+GitHub remote to actually push to and trigger from; if a real Anthropic API key gets configured via
+user-secrets, do the one remaining live end-to-end call Phase 8's code is otherwise ready for; and
+the raw-GUID-actor UX gap from Phase 9 is still open (needs a real design decision, not a quick
+patch).
