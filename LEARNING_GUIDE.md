@@ -1593,15 +1593,100 @@ prevented here before it ever shipped instead of discovered after.
 
 ---
 
-## Next: Phase 14 — Testing formalization (Testcontainers)
+## Phase 14 — Testing formalization (MSTest, Selenium, Postman/Newman — Testcontainers blocked)
+
+**Status: done, except Testcontainers.** Docker's daemon is still not running on this machine
+(checked again this session — not even the process is running, let alone the engine), so
+Testcontainers specifically — the one piece of this phase that has no meaning without a real
+Docker daemon to spin disposable containers up in — stays honestly blocked rather than faked. The
+other three named pieces (MSTest comparison, Selenium comparison, Postman/Newman) don't need
+Docker at all and are fully built, run, and verified.
+
+### `Beacon.UnitTests.MSTestComparison` — same domain logic, a different framework
+
+A direct MSTest port of the three pure-domain xUnit test classes that carry the most logic:
+`IncidentTests` (14 cases — the aggregate's whole behavior surface), `AlertDeduplicatorTests`,
+`EscalationPolicyTests`. Not a port of every test in the solution — that would be a lot of typing
+for no additional teaching value once the pattern is established once. `[TestClass]`/
+`[TestMethod]`/`[DataTestMethod]`+`[DataRow]`/`Assert.*`/`CollectionAssert` stand in for xUnit's
+bare classes/`[Fact]`/`[Theory]`+`[InlineData]`/FluentAssertions' `.Should()` chains — reading the
+two suites side by side (they're both in this repo, same behavior, different framework) is a more
+honest way to demonstrate MSTest fluency than a paragraph claiming it. 24/24 passing.
+
+### `Beacon.E2ETests.SeleniumComparison` — the same real flow, a different browser-automation tool
+
+One test automates the identical register → login → declare → acknowledge → resolve flow against
+the real running `Beacon.WarRoom` that Phase 9's `verify.mjs` (Playwright, JavaScript) already
+covers — a genuine side-by-side comparison of the same flow through two different tools and
+languages, not two unrelated smoke tests. Selenium 4's built-in Selenium Manager resolves a
+matching `chromedriver` automatically against whatever Chrome is installed — no manual driver-
+version juggling, which used to be Selenium's single biggest operational annoyance. Passed on the
+first real run against the live app; a screenshot was still taken and actually looked at afterward
+(the same "don't just trust green" discipline from every earlier frontend phase), confirming a
+real Declared → Acknowledged → Resolved timeline rendered — and, as a minor aside, re-confirming
+the still-open raw-GUID-actor gap from Phase 9 is exactly where it was left.
+
+### `docs/postman/Beacon.postman_collection.json` — run via Newman, and it caught a real bug immediately
+
+21 requests across health, auth, the full incident lifecycle (declare/list/get/acknowledge/
+resolve/escalate, both real report formats verified by file-signature bytes not just status code),
+both alert-ingestion paths, admin user management, and the public status endpoint — chained
+through collection variables (a login's token feeds every authenticated request after it) rather
+than hardcoded values, exactly what makes a collection like this actually reusable in CI (Table B:
+"Postman ... Manual testing turned into an automated CI gate").
+
+**The first real run failed almost everywhere, and the reason was a genuine, easy-to-repeat
+mistake worth naming.** Every login request came back 401. The register requests had succeeded —
+but each one generated its test email via `{{$randomUUID}}` written directly into the request
+body, while a separate pre-request script *also* called `{{$randomUUID}}` to compute what it
+guessed was the same email to save for the login step. Postman's dynamic variables re-evaluate
+independently every time they're referenced — so the account that got created and the email the
+login step tried to use were two different random values, silently. The fix: generate the UUID
+exactly once, in the pre-request script, store it in a collection variable, and reference *that*
+variable in the request body too — one source of truth instead of two independent guesses at the
+same value. Rerun clean: 21/21 requests, 30/30 assertions.
+
+### Common mistakes (and why this phase's code avoids them)
+
+1. **Faking the parts of a phase that are genuinely blocked**, instead of building everything else
+   and naming the blocker precisely. A Testcontainers project with every test wearing a permanent
+   `[Skip]` would exist only to look complete on a file listing — worse than not having it, since
+   it invites exactly the wrong interview question ("walk me through this test") with no honest
+   answer behind it.
+2. **Referencing the same dynamic/random value from two independent places** and assuming they'll
+   match. If a value has to be identical in two spots, compute it once and pass it, don't compute
+   it twice and hope.
+3. **Treating a comparison/parity suite as busywork to minimize.** Porting *every* xUnit test to
+   MSTest would prove the same point as porting the highest-signal dozen, at several times the
+   cost — the goal is demonstrated fluency, not maximum line count.
+
+### Interview questions this phase prepares you for
+
+- What's actually different about MSTest's and xUnit's test lifecycle/parallelism models, beyond
+  attribute-name spelling? (`[TestClass]`+`[TestInitialize]` vs. a constructor-per-test-instance,
+  xUnit's test-class-instantiated-per-test-method default, `[Collection]` vs. MSTest's
+  parallelization settings.)
+- Why does Selenium's "Selenium Manager" matter enough to mention — what problem did manually
+  managing `chromedriver` versions actually cause in practice?
+- Walk through the Postman variable-scoping bug: why did two `{{$randomUUID}}` references produce
+  different values, and what's the general rule for avoiding it?
+- What would Testcontainers actually buy you here that LocalDB (already in use since Phase 2)
+  doesn't — and where's the line between "worth the Docker dependency" and "not"?
+
+79/79 core backend tests still passing, plus 24/24 MSTest and 1/1 Selenium (104 .NET tests total),
+8/8 Java tests, 21/21 Postman requests via Newman.
+
+---
+
+## Next: Phase 15 — Docker + .NET Aspire
 
 Still open from earlier phases: Docker's daemon still isn't running (checked again this session —
-unchanged), so Testcontainers (this phase, needs a real Docker daemon to spin up disposable
-containers) and Phase 15's Docker/.NET Aspire work stay blocked on that; **GitHub push is still
-blocked** — `git push` failed this session with "Repository not found" against
-`https://github.com/RamanaaS/Beacon.git`, so despite `git status` reporting "up to date with
-origin/main" (a stale/cached tracking ref, not proof of a successful push), the account-mismatch
-issue in GitHub Desktop is evidently still unresolved and every commit remains local-only; if a
-real Anthropic API key gets configured via user-secrets, do the one remaining live end-to-end call
-Phase 8's code is otherwise ready for; and the raw-GUID-actor UX gap from Phase 9 is still open
-(needs a real design decision, not a quick patch).
+not even the process exists, so this phase's actual containers can be written but not run/
+verified) — Testcontainers (Phase 14) and Phase 15's Docker/.NET Aspire work both stay blocked on
+that; **GitHub push is still blocked** — `git push` failed this session with "Repository not
+found" against `https://github.com/RamanaaS/Beacon.git`, so despite `git status` reporting "up to
+date with origin/main" (a stale/cached tracking ref, not proof of a successful push), the
+account-mismatch issue in GitHub Desktop is evidently still unresolved and every commit remains
+local-only; if a real Anthropic API key gets configured via user-secrets, do the one remaining live
+end-to-end call Phase 8's code is otherwise ready for; and the raw-GUID-actor UX gap from Phase 9
+is still open (needs a real design decision, not a quick patch).

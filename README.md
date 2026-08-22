@@ -6,16 +6,19 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design, skill mapping, and p
 
 ## Status
 
-**Phase 13 done.** Full incident lifecycle (declare/acknowledge/resolve/escalate) behind JWT auth
-and role-based authorization, CQRS-orchestrated, Excel/PDF/AI-postmortem reporting, live WebSocket
-telemetry, a MediatR pub/sub bridge to SignalR for real-time incident broadcasts, four separate
-frontends against the same API (React+MobX `Beacon.WarRoom`, Electron `Beacon.OnCallConsole`,
-Blazor Server `Beacon.Admin`, MVC `Beacon.StatusPage`), and three polyglot pieces: a Java Spring
-Boot service simulating a legacy ITSM ticketing sync (`src/itsm-bridge`), a native C library
-parsing raw alert lines via P/Invoke (`native/log-parser-shim`), and a Python synthetic-alert load
-generator (`tools/alert-simulator`). Two real Redis/resilience latency bugs found and fixed by
-timing live requests, not just trusting a passing test suite. 79/79 backend tests passing (~18s),
-8/8 Java tests passing, plus Playwright-verified end-to-end browser runs of all four frontends.
+**Phase 14 done** (Testcontainers excepted — blocked on Docker, see below). Full incident
+lifecycle (declare/acknowledge/resolve/escalate) behind JWT auth and role-based authorization,
+CQRS-orchestrated, Excel/PDF/AI-postmortem reporting, live WebSocket telemetry, a MediatR pub/sub
+bridge to SignalR for real-time incident broadcasts, four separate frontends against the same API
+(React+MobX `Beacon.WarRoom`, Electron `Beacon.OnCallConsole`, Blazor Server `Beacon.Admin`, MVC
+`Beacon.StatusPage`), three polyglot pieces (Java `itsm-bridge`, native C `log-parser-shim` via
+P/Invoke, Python `alert-simulator`), and a testing-formalization pass adding an MSTest comparison
+suite, a Selenium comparison E2E suite, and a Postman/Newman API collection alongside the primary
+xUnit/Playwright suites. 79/79 core backend tests passing (~18s), plus 24/24 MSTest, 1/1 Selenium,
+8/8 Java, and 21/21 Postman requests via Newman. Docker's daemon has never come up on this machine
+across the whole project, so Testcontainers and Phase 15's Docker/Aspire work are the one
+explicitly blocked area — everything else in this project runs and is verified live, not just
+compiled.
 See [LEARNING_GUIDE.md](LEARNING_GUIDE.md) for what each phase teaches, concept by concept.
 
 ## Prerequisites
@@ -76,6 +79,15 @@ python -m venv .venv
 .\.venv\Scripts\python alert_simulator.py --dedup-demo
 ```
 
+## Running the API test collection (Postman/Newman)
+
+```
+cd docs\postman
+npm install
+npx newman run Beacon.postman_collection.json
+# needs Beacon.Api running at http://localhost:5252
+```
+
 ## Running the tests
 
 ```
@@ -90,6 +102,10 @@ cd src\itsm-bridge
 cd native\log-parser-shim
 .\build.ps1
 .\dist\test_log_parser.exe
+
+# Selenium E2E comparison suite — needs Beacon.Api (localhost:5252) and
+# Beacon.WarRoom's dev server (localhost:5173) already running
+dotnet test tests\Beacon.E2ETests.SeleniumComparison
 
 # Frontend type-check + build
 cd src\frontend\Beacon.WarRoom
