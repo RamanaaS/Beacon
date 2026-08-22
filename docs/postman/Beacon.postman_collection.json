@@ -1,0 +1,543 @@
+{
+  "info": {
+    "name": "Beacon API",
+    "description": "Covers the core Beacon.Api surface end to end: auth, incident lifecycle, alert ingestion (both the structured and native-shim-backed raw path), admin user management, and the public status endpoint. Designed to run top-to-bottom via Newman in CI (Table B: \"Postman - Continuation of your API-testing practice - Manual testing turned into an automated CI gate\") - each request captures what the next one needs into collection variables rather than hardcoding ids/tokens.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:5252" },
+    { "key": "responderEmail", "value": "" },
+    { "key": "responderToken", "value": "" },
+    { "key": "adminEmail", "value": "" },
+    { "key": "adminToken", "value": "" },
+    { "key": "adminUserId", "value": "" },
+    { "key": "incidentId", "value": "" },
+    { "key": "escalateIncidentId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": { "method": "GET", "url": "{{baseUrl}}/health" },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('reports healthy', () => pm.expect(pm.response.json().status).to.eql('healthy'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "POST /api/auth/register (Responder)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/auth/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{responderEmail}}\",\n  \"password\": \"Postman!Passw0rd1\",\n  \"displayName\": \"Postman Responder\",\n  \"role\": \"Responder\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Generated once here and reused via {{responderEmail}} in the body above -",
+                  "// {{$randomUUID}} in two separate places evaluates independently each time,",
+                  "// so referencing it directly in both the prerequest script AND the request",
+                  "// body would silently register one email and then try to log in with another.",
+                  "pm.collectionVariables.set('responderEmail', `postman-responder-${pm.variables.replaceIn('{{$randomUUID}}')}@beacon.test`);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/auth/register (Admin)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/auth/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"Postman!Passw0rd1\",\n  \"displayName\": \"Postman Admin\",\n  \"role\": \"Admin\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.collectionVariables.set('adminEmail', `postman-admin-${pm.variables.replaceIn('{{$randomUUID}}')}@beacon.test`);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/auth/login (Responder)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/auth/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{responderEmail}}\",\n  \"password\": \"Postman!Passw0rd1\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('roles include Responder', () => pm.expect(body.roles).to.include('Responder'));",
+                  "pm.collectionVariables.set('responderToken', body.token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/auth/login (Admin)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/auth/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"Postman!Passw0rd1\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('adminToken', body.token);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Incidents",
+      "item": [
+        {
+          "name": "POST /api/incidents (declare)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{responderToken}}" }
+            ],
+            "url": "{{baseUrl}}/api/incidents",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Postman collection run\",\n  \"severity\": \"Sev2_High\",\n  \"alertFingerprint\": \"postman-{{$randomUUID}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('incidentId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/incidents (list)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{responderToken}}" }],
+            "url": "{{baseUrl}}/api/incidents"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('includes the declared incident', () => {",
+                  "  const ids = pm.response.json().map(i => i.id);",
+                  "  pm.expect(ids).to.include(pm.collectionVariables.get('incidentId'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/incidents/{id}",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{responderToken}}" }],
+            "url": "{{baseUrl}}/api/incidents/{{incidentId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('status is Declared', () => pm.expect(pm.response.json().status).to.eql('Declared'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/incidents/{id}/acknowledge",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{responderToken}}" }],
+            "url": "{{baseUrl}}/api/incidents/{{incidentId}}/acknowledge"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('204 No Content', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/incidents/{id}/resolve",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{responderToken}}" }
+            ],
+            "url": "{{baseUrl}}/api/incidents/{{incidentId}}/resolve",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"summary\": \"Resolved by the Postman/Newman collection run.\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('204 No Content', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/incidents/{id}/report.xlsx",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{responderToken}}" }],
+            "url": "{{baseUrl}}/api/incidents/{{incidentId}}/report.xlsx"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('is a real xlsx (ZIP signature PK)', () => {",
+                  "  const bytes = pm.response.stream;",
+                  "  pm.expect(bytes[0]).to.eql(0x50);",
+                  "  pm.expect(bytes[1]).to.eql(0x4b);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/incidents/{id}/report.pdf",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{responderToken}}" }],
+            "url": "{{baseUrl}}/api/incidents/{{incidentId}}/report.pdf"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('is a real PDF (%PDF- signature)', () => {",
+                  "  const bytes = pm.response.stream;",
+                  "  const header = String.fromCharCode(...bytes.slice(0, 5));",
+                  "  pm.expect(header).to.eql('%PDF-');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/incidents (declare, for escalate)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{responderToken}}" }
+            ],
+            "url": "{{baseUrl}}/api/incidents",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Postman escalation check\",\n  \"severity\": \"Sev1_Critical\",\n  \"alertFingerprint\": \"postman-escalate-{{$randomUUID}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('escalateIncidentId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/incidents/{id}/escalate",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{responderToken}}" }
+            ],
+            "url": "{{baseUrl}}/api/incidents/{{escalateIncidentId}}/escalate",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"escalatedTo\": \"secondary-oncall\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('204 No Content', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Alerts",
+      "item": [
+        {
+          "name": "POST /api/alerts/ingest",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/alerts/ingest",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source\": \"postman\",\n  \"alertName\": \"HighErrorRate\",\n  \"instance\": \"payments-api-postman\",\n  \"severity\": \"Sev2_High\",\n  \"message\": \"Fired by the Postman/Newman collection\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('decision is New or Duplicate', () => {",
+                  "  pm.expect(['New', 'Duplicate']).to.include(pm.response.json().decision);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/alerts/ingest-raw",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/alerts/ingest-raw",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rawLine\": \"Sev3_Medium|postman|LatencySpike|checkout-api-postman|Fired by the Postman collection via the native log-parser-shim path\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/alerts/ingest-raw (malformed line -> 400)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/alerts/ingest-raw",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rawLine\": \"not-enough-fields\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "item": [
+        {
+          "name": "GET /api/admin/users",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "url": "{{baseUrl}}/api/admin/users"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const users = pm.response.json();",
+                  "const self = users.find(u => u.email === pm.collectionVariables.get('adminEmail'));",
+                  "pm.test('self is in the list', () => pm.expect(self).to.not.be.undefined);",
+                  "if (self) pm.collectionVariables.set('adminUserId', self.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/admin/users (Responder forbidden)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{responderToken}}" }],
+            "url": "{{baseUrl}}/api/admin/users"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('403 Forbidden', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "PUT /api/admin/users/{id}/role",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+            ],
+            "url": "{{baseUrl}}/api/admin/users/{{adminUserId}}/role",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"Admin\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('204 No Content', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Public Status",
+      "item": [
+        {
+          "name": "GET /api/status (no auth required)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/status"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK with no Authorization header', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('has the expected shape', () => {",
+                  "  pm.expect(body).to.have.property('overallStatus');",
+                  "  pm.expect(body).to.have.property('components');",
+                  "  pm.expect(body).to.have.property('activeIncidents');",
+                  "  pm.expect(body).to.have.property('uptimeHistory');",
+                  "  pm.expect(body.uptimeHistory).to.have.lengthOf(30);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
