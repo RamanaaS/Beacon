@@ -6,7 +6,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design, skill mapping, and p
 
 ## Status
 
-**Phase 19 done.** Full incident lifecycle (declare/acknowledge/resolve/escalate) behind JWT auth
+**All 20 phases done.** Full incident lifecycle (declare/acknowledge/resolve/escalate) behind JWT auth
 and role-based authorization, CQRS-orchestrated, Excel/PDF/AI-postmortem reporting, live WebSocket
 telemetry, a MediatR pub/sub bridge to SignalR for real-time incident broadcasts, four separate
 frontends against the same API (React+MobX `Beacon.WarRoom`, Electron `Beacon.OnCallConsole`,
@@ -28,10 +28,12 @@ with no auth wall. 107/107 core .NET tests passing (79 backend + 24 MSTest + 4 h
 machine across the whole project — not even the process runs — so Testcontainers and actually
 starting any container stay the one explicitly, honestly blocked area locally; the `docker.yml`
 workflow would genuinely work once pushed, since GitHub's own runners have real Docker.
-See [LEARNING_GUIDE.md](LEARNING_GUIDE.md) for what each phase teaches, concept by concept, and
+See [LEARNING_GUIDE.md](LEARNING_GUIDE.md) for what each phase teaches, concept by concept,
 [docs/observability/diagnosing-a-slow-request.md](docs/observability/diagnosing-a-slow-request.md)
 for a real (not hypothetical) worked example of using this project's own logging/correlation-ID
-setup to find and fix an actual bug.
+setup to find and fix an actual bug, and [docs/interview-prep.md](docs/interview-prep.md) for a
+"defend this architecture" pass — including a genuinely real, checkable scalability gap this doc
+surfaced while being written, not a hypothetical one.
 
 ## Prerequisites
 

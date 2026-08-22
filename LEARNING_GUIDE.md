@@ -2270,16 +2270,77 @@ shared integration-test host), 8/8 Java tests unaffected.
 
 ---
 
-## Next: Phase 20 — Docs and interview prep (final phase)
+## Phase 20 — Docs and interview prep (final phase)
 
-Still open, unchanged by this phase: Docker's daemon still isn't running (checked again this
-session — not even the process exists), so nothing containerized can be run/verified end-to-end
-locally, and Testcontainers (Phase 14) stays blocked too; **GitHub push is still blocked** —
-`git push` failed this session with "Repository not found" against
-`https://github.com/RamanaaS/Beacon.git`, so despite `git status` reporting "up to date with
-origin/main" (a stale/cached tracking ref, not proof of a successful push), the account-mismatch
-issue in GitHub Desktop is evidently still unresolved and every commit remains local-only, meaning
-neither the Phase 16 GitHub Actions workflows nor Phase 17's Azure deploy workflow has ever
-actually triggered; no real Anthropic API key or Azure subscription is available in this
-environment either; and the raw-GUID-actor UX gap from Phase 9 is still open (needs a real design
-decision, not a quick patch).
+**Status: done.** No application code this phase — the deliverable is
+[docs/interview-prep.md](docs/interview-prep.md), written to actually survive being asked the
+questions ARCHITECTURE.md's own learning roadmap names as the senior/architect-level bar: "why an
+event log over a status column, why CQRS here and not everywhere, why one service boundary and not
+ten, how this handles a real alert storm, what breaks first at scale."
+
+The discipline applied to writing it was the same one this whole project has used for every prior
+phase's LEARNING_GUIDE entry: check the claim against the real code before writing it down, don't
+reason from memory of "how it's probably built." That check paid off immediately — writing the
+"what breaks first at scale" section by actually re-reading
+[IncidentRepository.GetOpenIncidentsAsync](src/Beacon.Infrastructure/Incidents/IncidentRepository.cs#L14-L18)
+rather than describing it from memory surfaced a genuinely real, previously-undocumented scaling
+gap: it loads *every* incident and *every* event ever recorded into memory on every 30-second
+escalation-checker tick, filtering to "open" in C# after the fact, because `Incident.CurrentStatus`
+is computed from the event list ([Incident.cs:107-112](src/Beacon.Domain/Incidents/Incident.cs#L107-L112))
+and EF Core has no way to translate that fold into a SQL `WHERE` clause. A `grep` across every
+migration for `HasIndex` confirms the only index in the schema is the FK EF creates automatically —
+nothing supports this query at all. Not a hypothetical "at scale this might..." — a checkable,
+present-tense fact about the code as it exists right now, which is exactly what makes it a better
+interview answer than a rehearsed one.
+
+`docs/interview-prep.md` also curates a "tell me about a bug" bank: five stories already documented
+in full elsewhere in this file, picked and ordered by how good they are to say out loud in an
+interview, each with a one-paragraph STAR-shaped retelling. Phase 19's background-service crash
+(previous entry, above) tops the list — it's the only bug in this whole project that took down the
+*entire process* rather than degrading one feature, and it demonstrates Generic Host semantics most
+candidates whose experience is entirely in the request/response path have never had a reason to
+learn.
+
+### Common mistakes (and why this phase's doc avoids them)
+
+1. **Writing interview answers from memory of the design instead of the current code.** A design
+   doc and a codebase drift apart the moment either one changes without the other — the scaling
+   answer above only became a genuinely strong one because it was checked against the file that
+   actually runs, not the mental model of how CQRS/event-sourcing "generally" behave.
+2. **Answering "what would you do differently" with either false modesty or a real gap left
+   unnamed.** Both read worse in an interview than naming one specific, checkable gap with a
+   reasoned fix path — it's the same "verify live, be honest about what's actually blocked" stance
+   this whole project's docs have taken since Phase 3's Redis findings.
+
+### Interview questions this phase itself prepares you for
+
+- "Walk me through your architecture" and "defend a specific decision in it" are different asks —
+  the first wants a tour, the second wants you to have already stress-tested your own reasoning.
+  Which of Beacon's decisions would you push back on hardest if you were the one interviewing you?
+- Pick the "what breaks first at scale" finding apart further: what's the actual query plan
+  difference between the current `Include("_events")` + in-memory filter and a hypothetical indexed
+  `Status` column, and at what incident-count does that difference start to matter in practice?
+
+No test count change this phase (docs only) — 107/107 core .NET tests, 8/8 Java tests remain the
+final state of the whole 20-phase build.
+
+---
+
+## Closing state — all 20 phases done
+
+Docker's daemon has never come up on this machine across the entire project — not even the process
+exists, re-confirmed as recently as this phase — so Testcontainers (Phase 14) and actually starting
+any container locally stay the one consistently, honestly blocked area; `docker.yml` and
+`deploy.yml` would genuinely run once pushed, since GitHub's own runners have real Docker and this
+project has never had reason to doubt that, just no way to prove it from here. **GitHub push is
+still blocked** — `git push` fails with "Repository not found" against
+`https://github.com/RamanaaS/Beacon.git`; despite `git status` occasionally reporting "up to date
+with origin/main" (a stale/cached tracking ref, not proof of a push — learned the hard way in
+Phase 12), the GitHub Desktop account-mismatch issue is still unresolved, so every commit across
+all 20 phases remains local-only and neither the Phase 16 GitHub Actions workflows nor Phase 17's
+Azure deploy workflow has ever actually triggered on real infrastructure. No real Anthropic API key
+or Azure subscription exists in this environment, so Phase 8's live LLM call and Phase 17's Bicep
+deployment stay written-and-locally-verified but never run for real. The raw-GUID-actor UX gap from
+Phase 9 is still open. All four are named here one final time not as loose ends to feel bad about,
+but because naming exactly what's blocked and why — rather than quietly hoping nobody asks — is the
+same honesty standard this whole file has tried to hold to since Phase 1.
