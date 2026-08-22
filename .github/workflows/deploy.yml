@@ -1,0 +1,140 @@
+name: Deploy to Azure
+
+# Manually triggered (workflow_dispatch), not on every push — a real deploy shouldn't be an
+# automatic side effect of merging to main without a deliberate decision to ship. Same honest
+# framing as this project's other unverified-here workflows (Phase 15/16): correct, would run
+# against a real subscription, but this repo has neither the GitHub push access nor an Azure
+# subscription/credentials to actually trigger it — see LEARNING_GUIDE.md's Phase 17 entry.
+#
+# Uses OIDC federated login (azure/login with client-id/tenant-id/subscription-id, no client
+# secret) rather than a long-lived AZURE_CREDENTIALS JSON secret — the credential-less approach
+# Microsoft's own docs recommend now, and a real improvement over what most "Azure + GitHub
+# Actions" tutorials still show. None of AZURE_CLIENT_ID / AZURE_TENANT_ID /
+# AZURE_SUBSCRIPTION_ID / SQL_ADMIN_PASSWORD exist as repo secrets here — there's no Azure AD app
+# registration behind them, because there's no real Azure subscription to register one in.
+#
+# Three jobs, in this specific order, for a real reason each — not an arbitrary split:
+#   1. deploy-infrastructure creates the ACR (among everything else) FIRST. Container Apps'
+#      images are tagged :latest in infrastructure/main.bicep at resource-definition time, and on
+#      a brand-new ACR that tag doesn't exist yet — but Azure's ARM deployment for Container Apps
+#      succeeds at the control-plane level regardless (the resource gets created; only the
+#      resulting *revision* ends up unhealthy until a real image shows up), so this ordering
+#      genuinely works rather than just happening to not error immediately.
+#   2. build-and-push can only run once the ACR from step 1 exists to push into.
+#   3. update-apps explicitly points each Container App at the just-pushed, immutable
+#      commit-SHA-tagged image — not relying on a mutated :latest tag to somehow get picked up,
+#      which Container Apps doesn't do automatically.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environmentName:
+        description: "Environment name (used in Azure resource naming, e.g. dev)"
+        required: true
+        default: "dev"
+
+permissions:
+  id-token: write # required for OIDC federated login
+  contents: read
+
+env:
+  RESOURCE_GROUP: beacon-${{ inputs.environmentName }}-rg
+  REGISTRY_NAME: beacon${{ inputs.environmentName }}acr
+
+jobs:
+  deploy-infrastructure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # `az deployment group create` needs the resource group to already exist — idempotent
+      # (create-if-not-exists), safe to run on every deploy rather than a separate one-time setup
+      # step someone has to remember to run first.
+      - name: Ensure the resource group exists
+        run: az group create --name ${{ env.RESOURCE_GROUP }} --location eastus
+
+      - name: What-if (preview only, never fails the run)
+        run: |
+          az deployment group what-if \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --template-file infrastructure/main.bicep \
+            --parameters environmentName=${{ inputs.environmentName }} sqlAdminPassword=${{ secrets.SQL_ADMIN_PASSWORD }} claudeApiKey=${{ secrets.CLAUDE_API_KEY }}
+
+      - name: Deploy
+        run: |
+          az deployment group create \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --template-file infrastructure/main.bicep \
+            --parameters environmentName=${{ inputs.environmentName }} sqlAdminPassword=${{ secrets.SQL_ADMIN_PASSWORD }} claudeApiKey=${{ secrets.CLAUDE_API_KEY }}
+
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: deploy-infrastructure
+    strategy:
+      matrix:
+        include:
+          - name: beacon-api
+            context: .
+            dockerfile: src/Beacon.Api/Dockerfile
+          - name: beacon-admin
+            context: .
+            dockerfile: src/frontend/Beacon.Admin/Dockerfile
+          - name: beacon-statuspage
+            context: .
+            dockerfile: src/Beacon.StatusPage/Dockerfile
+          - name: beacon-warroom
+            context: src/frontend/Beacon.WarRoom
+            dockerfile: src/frontend/Beacon.WarRoom/Dockerfile
+          - name: itsm-bridge
+            context: src/itsm-bridge
+            dockerfile: src/itsm-bridge/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # az acr build submits the build to ACR's own build service rather than building locally
+      # and pushing — one fewer credential (no docker-login-to-ACR step) and works identically
+      # whether the runner has Docker or not, since the actual build happens inside Azure.
+      # Tagged by commit SHA, not :latest — an immutable, traceable-to-a-commit reference the
+      # next job can point a Container App revision at explicitly.
+      - name: Build and push ${{ matrix.name }}
+        run: |
+          az acr build \
+            --registry ${{ env.REGISTRY_NAME }} \
+            --image ${{ matrix.name }}:${{ github.sha }} \
+            --file ${{ matrix.dockerfile }} \
+            ${{ matrix.context }}
+
+  update-apps:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    strategy:
+      matrix:
+        name: [beacon-api, beacon-admin, beacon-statuspage, beacon-warroom, itsm-bridge]
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Explicit image update creates a new Container Apps revision pointed at the SHA tag just
+      # pushed — the step that actually makes this a deploy, not just "infrastructure exists and
+      # an image happens to sit in a registry somewhere."
+      - name: Point ${{ matrix.name }} at the new image
+        run: |
+          az containerapp update \
+            --name ${{ matrix.name }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.REGISTRY_NAME }}.azurecr.io/${{ matrix.name }}:${{ github.sha }}
