@@ -40,6 +40,9 @@ target/
 __pycache__/
 *.pyc
 
+## Serilog rolling file output (Phase 18)
+logs/
+
 ## Secrets / local env
 *.env
 appsettings.*.local.json

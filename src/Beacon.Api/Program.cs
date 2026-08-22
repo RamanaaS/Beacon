@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json.Serialization;
 using Beacon.Api.Alerts;
 using Beacon.Api.Auth;
@@ -9,18 +10,48 @@ using Beacon.Application;
 using Beacon.Infrastructure;
 using Beacon.Infrastructure.Auth;
 using Beacon.Infrastructure.Incidents;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Serilog;
+using Serilog.Context;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Structured logging (Phase 18) — sinks/levels read from appsettings.json's "Serilog" section
+// (Serilog.Settings.Configuration) rather than hardcoded here, so console verbosity can differ
+// from the file sink without a code change. Replaces the default Microsoft.Extensions.Logging
+// console formatter entirely; UseSerilogRequestLogging() below adds one structured summary line
+// per HTTP request (method, path, status, elapsed ms) on top of whatever each endpoint logs itself.
+builder.Host.UseSerilog((context, services, configuration) => configuration
+    .ReadFrom.Configuration(context.Configuration)
+    .ReadFrom.Services(services)
+    .Enrich.FromLogContext()
+    .Enrich.WithMachineName()
+    .Enrich.WithProperty("Application", "Beacon.Api"));
+
 // Aspire's ServiceDefaults (Phase 15) — OpenTelemetry tracing/metrics, service discovery, and
-// AddStandardResilienceHandler() on every outgoing HttpClient by default. Deliberately NOT calling
-// app.MapDefaultEndpoints() below: it maps /health itself, which would collide with the plain
-// custom /health endpoint this API has had since Phase 1. Wiring that custom endpoint into a real
-// ASP.NET Core HealthCheckMiddleware (checking SQL/Redis reachability, not just "the process is
-// up") is Phase 18's job, not a collision to paper over here.
+// AddStandardResilienceHandler() on every outgoing HttpClient by default.
 builder.AddServiceDefaults();
+
+// Health checks (Phase 18) — a real, considered split, not "check everything and gate on all of
+// it." SQL is tagged "ready": if the database is unreachable, this API genuinely cannot serve
+// most requests, so /health should report Unhealthy and a real load balancer/orchestrator should
+// stop routing traffic here. Redis is deliberately tagged "dependencies", NOT "ready" — Phase 13
+// built RedisRecentAlertsStore specifically to keep serving requests (skipping dedup, not
+// rejecting the alert) when Redis is down, so a health check that flipped /health to Unhealthy
+// over a down Redis would pull healthy, working instances out of rotation for a failure mode the
+// application was deliberately engineered to tolerate. Redis's real status is still visible in
+// /health's response body (HealthCheckJsonWriter serializes every check, not just the aggregate)
+// — a human or a dashboard can see it's degraded; a load balancer just doesn't act on it alone.
+// The Redis check resolves the same IConnectionMultiplexer singleton AddInfrastructure registers
+// (not a second, independently-connected one) — checking the actual connection the app uses,
+// including its Phase 13 abortConnect=false/timeout tuning, rather than a fresh connection that
+// would behave differently and prove nothing about the one that matters.
+var sqlConnectionString = builder.Configuration.GetConnectionString("BeaconDb")!;
+builder.Services.AddHealthChecks()
+    .AddSqlServer(sqlConnectionString, name: "sql", tags: ["ready"])
+    .AddRedis(sp => sp.GetRequiredService<StackExchange.Redis.IConnectionMultiplexer>(), name: "redis", tags: ["dependencies"]);
 
 // typeof(Program).Assembly added to the scan so MediatR also discovers notification handlers
 // that live in Beacon.Api itself (IncidentDeclaredNotificationHandler bridges to SignalR) — see
@@ -89,6 +120,34 @@ builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
+// Correlation ID (Phase 18) — pushes the request's real W3C trace ID (Activity.Current, the same
+// ID OpenTelemetry's spans use) into Serilog's LogContext, so every log line written anywhere
+// during this request carries the identical ID a trace in the OTLP exporter would show. That's
+// the actual point of a correlation ID: given one slow/failed request, "grep the logs for this ID"
+// and "look up this trace" land on the exact same events, not two separately-numbered systems.
+// Falls back to HttpContext.TraceIdentifier on the rare request with no active Activity (matches
+// ASP.NET Core's own default request-tracking ID in that case, still unique per request).
+//
+// Registered BEFORE UseSerilogRequestLogging deliberately, not after: middleware registered
+// earlier wraps everything registered later, so this has to be the outer layer for its
+// LogContext.PushProperty scope to still be active when UseSerilogRequestLogging logs its own
+// summary line on the way back out. Got this backwards on the first pass — the summary line's
+// [CorrelationId] came out empty every time despite every other log line during the same request
+// having it, caught by actually reading the real console output rather than trusting it compiled.
+app.Use(async (context, next) =>
+{
+    var correlationId = Activity.Current?.TraceId.ToString() ?? context.TraceIdentifier;
+    using (LogContext.PushProperty("CorrelationId", correlationId))
+    {
+        context.Response.Headers["X-Correlation-Id"] = correlationId;
+        await next();
+    }
+});
+
+// One structured summary line per HTTP request (method, path, status code, elapsed ms) — inside
+// the correlation-id middleware above so that line carries the same ID too.
+app.UseSerilogRequestLogging();
+
 app.UseExceptionHandler();
 app.UseWebSockets();
 
@@ -137,9 +196,37 @@ app.MapTelemetryEndpoints();
 app.MapPublicStatusEndpoints();
 app.MapHub<IncidentAlertsHub>("/hubs/incident-alerts");
 
-app.MapGet("/health", () => Results.Ok(new { status = "healthy" }))
-   .WithName("HealthCheck")
-   .ExcludeFromDescription();
+// Readiness: only "ready"-tagged checks (SQL) gate the aggregate status — see the health-check
+// registration above for why Redis deliberately doesn't. 503 here means "don't route traffic to
+// this instance," matching what a real load balancer/Container Apps health probe would act on.
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready"),
+    ResponseWriter = HealthCheckJsonWriter.WriteResponse
+}).ExcludeFromDescription();
+
+// Liveness: just "is the process itself responsive," never gated on a downstream dependency —
+// restarting this process would do nothing to fix a down SQL Server or Redis, so liveness
+// shouldn't fail because of either.
+app.MapHealthChecks("/alive", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("live"),
+    ResponseWriter = HealthCheckJsonWriter.WriteResponse
+}).ExcludeFromDescription();
+
+// A HealthCheckOptions.Predicate doesn't just gate the aggregate status — it decides which checks
+// even *run* for that endpoint at all. Redis's "dependencies"-tagged check genuinely never appears
+// in /health's or /alive's response, not just excluded from their pass/fail math (found by
+// actually calling both live and noticing "redis" was simply missing from either body — the exact
+// "look at the real output, don't assume the design worked" discipline this whole project has
+// followed since Phase 9). /health/detail has no predicate at all, so it's every registered check
+// — SQL, Redis, and self — regardless of which ones happen to gate traffic routing. The endpoint
+// a human or a dashboard actually wants when asking "what's going on with this instance," as
+// opposed to the narrow yes/no a load balancer polls.
+app.MapHealthChecks("/health/detail", new HealthCheckOptions
+{
+    ResponseWriter = HealthCheckJsonWriter.WriteResponse
+}).ExcludeFromDescription();
 
 app.Run();
 
