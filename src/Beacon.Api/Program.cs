@@ -50,9 +50,12 @@ builder.AddServiceDefaults();
 // (not a second, independently-connected one) — checking the actual connection the app uses,
 // including its Phase 13 abortConnect=false/timeout tuning, rather than a fresh connection that
 // would behave differently and prove nothing about the one that matters.
-var sqlConnectionString = builder.Configuration.GetConnectionString("BeaconDb")!;
+// The SQL connection string is resolved from IConfiguration when the check runs, not read off
+// builder.Configuration up here: WebApplicationFactory's ConfigureAppConfiguration override isn't
+// applied yet at this point, so an eager read made the integration tests health-check the *dev*
+// BeaconDb instead of their own test database (and pass only on a machine where it existed).
 builder.Services.AddHealthChecks()
-    .AddSqlServer(sqlConnectionString, name: "sql", tags: ["ready"])
+    .AddSqlServer(sp => sp.GetRequiredService<IConfiguration>().GetConnectionString("BeaconDb")!, name: "sql", tags: ["ready"])
     .AddRedis(sp => sp.GetRequiredService<StackExchange.Redis.IConnectionMultiplexer>(), name: "redis", tags: ["dependencies"]);
 
 // typeof(Program).Assembly added to the scan so MediatR also discovers notification handlers
