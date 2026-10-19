@@ -18,7 +18,7 @@ public class GetPublicStatusQueryHandlerTests
         incident.Resolve("user-1", "Fixed.", Now.AddDays(-5).AddMinutes(10));
         repository.Add(incident);
 
-        var handler = new GetPublicStatusQueryHandler(repository);
+        var handler = new GetPublicStatusQueryHandler(repository, new MutableClock(Now));
 
         var result = await handler.Handle(new GetPublicStatusQuery(), CancellationToken.None);
 
@@ -36,7 +36,7 @@ public class GetPublicStatusQueryHandlerTests
         var repository = new InMemoryIncidentRepository();
         repository.Add(Incident.Declare("Ongoing", severity, "user-1", "fp-1", Now));
 
-        var handler = new GetPublicStatusQueryHandler(repository);
+        var handler = new GetPublicStatusQueryHandler(repository, new MutableClock(Now));
 
         var result = await handler.Handle(new GetPublicStatusQuery(), CancellationToken.None);
 
@@ -49,7 +49,7 @@ public class GetPublicStatusQueryHandlerTests
         var repository = new InMemoryIncidentRepository();
         repository.Add(Incident.Declare("Payments down", Severity.Sev1_Critical, "internal-user-guid", "fp-1", Now));
 
-        var handler = new GetPublicStatusQueryHandler(repository);
+        var handler = new GetPublicStatusQueryHandler(repository, new MutableClock(Now));
 
         var result = await handler.Handle(new GetPublicStatusQuery(), CancellationToken.None);
 
@@ -64,7 +64,7 @@ public class GetPublicStatusQueryHandlerTests
     {
         var repository = new InMemoryIncidentRepository();
 
-        var handler = new GetPublicStatusQueryHandler(repository);
+        var handler = new GetPublicStatusQueryHandler(repository, new MutableClock(Now));
 
         var result = await handler.Handle(new GetPublicStatusQuery(), CancellationToken.None);
 
@@ -82,7 +82,7 @@ public class GetPublicStatusQueryHandlerTests
         incident.Resolve("user-1", "Rolled back the bad deploy.", declaredAt.AddHours(2));
         repository.Add(incident);
 
-        var handler = new GetPublicStatusQueryHandler(repository);
+        var handler = new GetPublicStatusQueryHandler(repository, new MutableClock(Now));
 
         var result = await handler.Handle(new GetPublicStatusQuery(), CancellationToken.None);
 

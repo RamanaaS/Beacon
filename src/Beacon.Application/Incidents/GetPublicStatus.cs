@@ -1,3 +1,4 @@
+using Beacon.Application.Common;
 using Beacon.Domain.Common;
 using Beacon.Domain.Incidents;
 using MediatR;
@@ -42,7 +43,7 @@ public sealed record GetPublicStatusQuery : IRequest<PublicStatusResponse>;
 /// The overall banner and uptime history are still real signals, computed from actual incident
 /// severity and duration, not hardcoded.
 /// </summary>
-public sealed class GetPublicStatusQueryHandler(IIncidentRepository repository)
+public sealed class GetPublicStatusQueryHandler(IIncidentRepository repository, IClock clock)
     : IRequestHandler<GetPublicStatusQuery, PublicStatusResponse>
 {
     private static readonly string[] MonitoredComponents = ["payments-api", "checkout-api", "auth-api"];
@@ -71,7 +72,10 @@ public sealed class GetPublicStatusQueryHandler(IIncidentRepository repository)
             .Select(i => new PublicIncidentSummary(i.Title, i.CurrentSeverity, i.CurrentStatus, i.DeclaredAt))
             .ToList();
 
-        var today = DateOnly.FromDateTime(DateTimeOffset.UtcNow.UtcDateTime);
+        // Through IClock like every other handler, not DateTimeOffset.UtcNow: the uptime window is
+        // relative to "today", so reading the real clock here made the unit tests (pinned to a
+        // fixed date) start failing once that date slid out of the 30-day window.
+        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
         var uptimeHistory = Enumerable.Range(0, UptimeWindowDays)
             .Select(daysAgo => today.AddDays(-(UptimeWindowDays - 1 - daysAgo)))
             .Select(date => new UptimeDay(date, HadMajorIncidentOn(incidents, date)))
