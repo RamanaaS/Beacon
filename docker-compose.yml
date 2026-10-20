@@ -60,6 +60,9 @@ services:
       # path (Aspire's injected connection string) doesn't automatically get these the same way.
       ConnectionStrings__Redis: "redis:6379,abortConnect=false,connectTimeout=1000,connectRetry=1,syncTimeout=1000"
       ItsmBridge__BaseUrl: "http://itsm-bridge:8080"
+      # Production never auto-migrates by default (Program.cs), so without this the stack starts
+      # against an empty SQL Server with no BeaconDb, and /health fails its SQL check forever.
+      Database__MigrateOnStartup: "true"
     depends_on:
       sql:
         condition: service_healthy
