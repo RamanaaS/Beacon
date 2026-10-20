@@ -1,5 +1,6 @@
 import { makeAutoObservable, runInAction } from "mobx";
 import { Subject, type Subscription, bufferTime, filter } from "rxjs";
+import { apiBaseUrl } from "../api/client";
 
 export interface MetricSample {
   serviceName: string;
@@ -45,7 +46,8 @@ class TelemetryStore {
       )
       .subscribe((batch) => this.applyBatch(batch));
 
-    const socket = new WebSocket("ws://localhost:5252/ws/telemetry");
+    // Same host as the REST API, so http(s):// becomes ws(s):// and a deployed HTTPS page connects over wss.
+    const socket = new WebSocket(`${apiBaseUrl.replace(/^http/, "ws")}/ws/telemetry`);
     socket.onopen = () => runInAction(() => { this.connected = true; });
     socket.onclose = () => runInAction(() => { this.connected = false; });
     socket.onmessage = (event: MessageEvent<string>) => {

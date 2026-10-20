@@ -25,7 +25,10 @@ public sealed class IncidentReportGenerator : IIncidentReportGenerator
 
         // PDFsharp 6's cross-platform core needs an explicit font resolver — see
         // WindowsFontResolver's own comment for why this is a real, not incidental, constraint.
-        GlobalFontSettings.FontResolver = new WindowsFontResolver();
+        // The container image runs on Linux, where LinuxFontResolver reads bundled Liberation fonts.
+        GlobalFontSettings.FontResolver = OperatingSystem.IsWindows()
+            ? new WindowsFontResolver()
+            : new LinuxFontResolver();
     }
 
     public byte[] GenerateExcelReport(Incident incident)

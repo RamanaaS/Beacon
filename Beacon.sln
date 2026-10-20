@@ -33,6 +33,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Beacon.AppHost", "src\Beaco
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Beacon.ServiceDefaults", "src\Beacon.ServiceDefaults\Beacon.ServiceDefaults.csproj", "{6DD705CA-B4F9-4322-AFB2-50EA7204621A}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Beacon.Infrastructure.Postgres", "src\Beacon.Infrastructure.Postgres\Beacon.Infrastructure.Postgres.csproj", "{40CDC0EB-7618-4B71-9C1C-3AA5061D669B}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -187,6 +189,18 @@ Global
 		{6DD705CA-B4F9-4322-AFB2-50EA7204621A}.Release|x64.Build.0 = Release|Any CPU
 		{6DD705CA-B4F9-4322-AFB2-50EA7204621A}.Release|x86.ActiveCfg = Release|Any CPU
 		{6DD705CA-B4F9-4322-AFB2-50EA7204621A}.Release|x86.Build.0 = Release|Any CPU
+		{40CDC0EB-7618-4B71-9C1C-3AA5061D669B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{40CDC0EB-7618-4B71-9C1C-3AA5061D669B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{40CDC0EB-7618-4B71-9C1C-3AA5061D669B}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{40CDC0EB-7618-4B71-9C1C-3AA5061D669B}.Debug|x64.Build.0 = Debug|Any CPU
+		{40CDC0EB-7618-4B71-9C1C-3AA5061D669B}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{40CDC0EB-7618-4B71-9C1C-3AA5061D669B}.Debug|x86.Build.0 = Debug|Any CPU
+		{40CDC0EB-7618-4B71-9C1C-3AA5061D669B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{40CDC0EB-7618-4B71-9C1C-3AA5061D669B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{40CDC0EB-7618-4B71-9C1C-3AA5061D669B}.Release|x64.ActiveCfg = Release|Any CPU
+		{40CDC0EB-7618-4B71-9C1C-3AA5061D669B}.Release|x64.Build.0 = Release|Any CPU
+		{40CDC0EB-7618-4B71-9C1C-3AA5061D669B}.Release|x86.ActiveCfg = Release|Any CPU
+		{40CDC0EB-7618-4B71-9C1C-3AA5061D669B}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -205,5 +219,6 @@ Global
 		{475F1040-5D02-4C34-8B20-4A235A418FE5} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{3AA53DB1-66E2-4A5A-A23B-22297A774252} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{6DD705CA-B4F9-4322-AFB2-50EA7204621A} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{40CDC0EB-7618-4B71-9C1C-3AA5061D669B} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal

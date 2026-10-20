@@ -4,9 +4,11 @@
     <ProjectReference Include="..\Beacon.Application\Beacon.Application.csproj" />
     <ProjectReference Include="..\Beacon.Infrastructure\Beacon.Infrastructure.csproj" />
     <ProjectReference Include="..\Beacon.ServiceDefaults\Beacon.ServiceDefaults.csproj" />
+    <ProjectReference Include="..\Beacon.Infrastructure.Postgres\Beacon.Infrastructure.Postgres.csproj" />
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="AspNetCore.HealthChecks.NpgSql" Version="9.0.0" />
     <PackageReference Include="AspNetCore.HealthChecks.Redis" Version="9.0.0" />
     <PackageReference Include="AspNetCore.HealthChecks.SqlServer" Version="9.0.0" />
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
