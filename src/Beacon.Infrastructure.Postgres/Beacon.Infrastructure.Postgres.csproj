@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Holds only the PostgreSQL migrations. EF Core discovers every migration for a DbContext in
+       its migrations assembly, so SQL Server and PostgreSQL histories can't share
+       Beacon.Infrastructure. Each provider gets its own assembly instead, and
+       DependencyInjection.cs points UseNpgsql at this one with MigrationsAssembly(). -->
+
+  <ItemGroup>
+    <ProjectReference Include="..\Beacon.Infrastructure\Beacon.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.19">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

@@ -12,12 +12,20 @@ public static class AuthEndpoints
         group.MapPost("/register", async (
                 RegisterRequest request,
                 UserManager<ApplicationUser> userManager,
+                IConfiguration configuration,
                 CancellationToken ct) =>
             {
-                if (!Roles.All.Contains(request.Role))
+                // "Auth:SelfSignupRoles" narrows which roles signup may grant. Unset keeps the
+                // original demo behaviour (any role). The public demo sets it to Viewer and
+                // Responder, so a stranger on the internet can't make themselves Admin.
+                var allowedRoles = configuration.GetSection("Auth:SelfSignupRoles").Get<string[]>() is { Length: > 0 } configured
+                    ? Roles.All.Intersect(configured, StringComparer.OrdinalIgnoreCase).ToArray()
+                    : Roles.All.ToArray();
+
+                if (!allowedRoles.Contains(request.Role))
                     return Results.ValidationProblem(new Dictionary<string, string[]>
                     {
-                        ["role"] = [$"Role must be one of: {string.Join(", ", Roles.All)}"]
+                        ["role"] = [$"Role must be one of: {string.Join(", ", allowedRoles)}"]
                     });
 
                 var user = new ApplicationUser

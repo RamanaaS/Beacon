@@ -12,6 +12,7 @@ using Beacon.Infrastructure;
 using Beacon.Infrastructure.Auth;
 using Beacon.Infrastructure.Incidents;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -54,8 +55,12 @@ builder.AddServiceDefaults();
 // builder.Configuration up here: WebApplicationFactory's ConfigureAppConfiguration override isn't
 // applied yet at this point, so an eager read made the integration tests health-check the *dev*
 // BeaconDb instead of their own test database (and pass only on a machine where it existed).
-builder.Services.AddHealthChecks()
-    .AddSqlServer(sp => sp.GetRequiredService<IConfiguration>().GetConnectionString("BeaconDb")!, name: "sql", tags: ["ready"])
+var healthChecks = builder.Services.AddHealthChecks();
+if (DatabaseProvider.IsPostgres(builder.Configuration))
+    healthChecks.AddNpgSql(sp => sp.GetRequiredService<IConfiguration>().GetConnectionString("BeaconDb")!, name: "sql", tags: ["ready"]);
+else
+    healthChecks.AddSqlServer(sp => sp.GetRequiredService<IConfiguration>().GetConnectionString("BeaconDb")!, name: "sql", tags: ["ready"]);
+healthChecks
     .AddRedis(sp => sp.GetRequiredService<StackExchange.Redis.IConnectionMultiplexer>(), name: "redis", tags: ["dependencies"]);
 
 // typeof(Program).Assembly added to the scan so MediatR also discovers notification handlers
@@ -113,8 +118,11 @@ builder.Services.AddAuthorizationBuilder()
 
 // Named "DevCors" deliberately, not applied unconditionally — an allowed-origin list for a real
 // deployed frontend is a production/deployment decision (Phase 18), not something to hardcode
-// alongside the Vite dev server's localhost origin. Only the dev policy exists so far.
+// alongside the Vite dev server's localhost origin. A deployed frontend's origins come from
+// "Cors:AllowedOrigins" instead (the public demo sets its GitHub Pages origin there).
 const string devCorsPolicy = "DevCors";
+const string deployedCorsPolicy = "DeployedCors";
+var deployedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
 builder.Services.AddCors(options =>
 {
     options.AddPolicy(devCorsPolicy, policy => policy
@@ -122,7 +130,29 @@ builder.Services.AddCors(options =>
         .AllowAnyHeader()
         .AllowAnyMethod()
         .AllowCredentials());
+
+    if (deployedOrigins.Length > 0)
+        options.AddPolicy(deployedCorsPolicy, policy => policy
+            .WithOrigins(deployedOrigins)
+            .AllowAnyHeader()
+            .AllowAnyMethod()
+            .AllowCredentials());
 });
+
+// Behind a hosting platform's reverse proxy every request arrives from the proxy's address, so
+// the per-IP "alert-ingestion" rate limit would collapse into one shared bucket for the whole
+// internet. "ForwardedHeaders:Enabled" trusts X-Forwarded-For/-Proto instead. Off by default:
+// trusting those headers is only safe when a proxy you control is the only way in.
+var trustForwardedHeaders = builder.Configuration.GetValue<bool>("ForwardedHeaders:Enabled");
+if (trustForwardedHeaders)
+{
+    builder.Services.Configure<ForwardedHeadersOptions>(options =>
+    {
+        options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+        options.KnownNetworks.Clear();
+        options.KnownProxies.Clear();
+    });
+}
 
 // Without this, System.Text.Json serializes/expects enums (Severity, IncidentStatus) as raw
 // numbers — technically correct, but "severity": 4 is unreadable over the wire compared to
@@ -146,6 +176,12 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
+
+// First in the pipeline, so logging and the rate limiter below both see the real client address.
+if (trustForwardedHeaders)
+{
+    app.UseForwardedHeaders();
+}
 
 // Correlation ID (Phase 18) — pushes the request's real W3C trace ID (Activity.Current, the same
 // ID OpenTelemetry's spans use) into Serilog's LogContext, so every log line written anywhere
@@ -182,6 +218,10 @@ if (app.Environment.IsDevelopment())
 {
     app.UseCors(devCorsPolicy);
 }
+else if (deployedOrigins.Length > 0)
+{
+    app.UseCors(deployedCorsPolicy);
+}
 
 app.UseAuthentication();
 app.UseAuthorization();
@@ -207,13 +247,19 @@ if (!app.Environment.IsEnvironment("Testing"))
     app.UseOutputCache();
 }
 
-if (app.Environment.IsDevelopment())
+// "Swagger:Enabled" exposes the docs outside Development too. The public demo turns it on so
+// visitors can browse the API; it documents endpoints only and grants no access by itself.
+if (app.Environment.IsDevelopment() || app.Configuration.GetValue<bool>("Swagger:Enabled"))
 {
     app.UseSwagger();
     app.UseSwaggerUI();
+}
 
-    // Convenience for local dev only — a real deployment applies migrations as an explicit
-    // CI/CD pipeline step (Phase 17), not as a side effect of the app starting up.
+// Convenience for local dev — a real deployment applies migrations as an explicit CI/CD
+// pipeline step (Phase 17), not as a side effect of the app starting up. The free demo host has
+// no pipeline step to run them from, so it opts in with "Database:MigrateOnStartup".
+if (app.Environment.IsDevelopment() || app.Configuration.GetValue<bool>("Database:MigrateOnStartup"))
+{
     using var scope = app.Services.CreateScope();
     await scope.ServiceProvider.GetRequiredService<BeaconDbContext>().Database.MigrateAsync();
 

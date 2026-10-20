@@ -1,0 +1,67 @@
+name: War room on GitHub Pages
+
+# Publishes Beacon.WarRoom (the React dashboard) as the free public demo at
+# https://<owner>.github.io/Beacon/. It talks to Beacon.Api hosted on Render (render.yaml).
+#
+# One-time setup in the GitHub repo:
+#   Settings -> Pages -> Source: "GitHub Actions".
+#   Optional: Settings -> Secrets and variables -> Actions -> Variables -> BEACON_API_URL,
+#   only if Render gave the API a different URL from the default below.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/frontend/Beacon.WarRoom/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/frontend/Beacon.WarRoom
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/frontend/Beacon.WarRoom/package-lock.json
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run build
+        env:
+          VITE_BASE: /${{ github.event.repository.name }}/
+          VITE_API_URL: ${{ vars.BEACON_API_URL || 'https://ramanaas-beacon-api.onrender.com' }}
+
+      # GitHub Pages has no server-side rewrites, so a refresh on /Beacon/incidents/<id> would 404.
+      # Serving the app shell as 404.html lets React Router handle that path instead.
+      - run: cp dist/index.html dist/404.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: src/frontend/Beacon.WarRoom/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

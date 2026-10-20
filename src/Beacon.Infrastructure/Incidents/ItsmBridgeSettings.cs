@@ -10,4 +10,11 @@ namespace Beacon.Infrastructure.Incidents;
 public sealed class ItsmBridgeSettings
 {
     public string BaseUrl { get; init; } = "http://localhost:8080";
+
+    /// <summary>
+    /// False for a deployment with no itsm-bridge at all (the free public demo). Ticket sync
+    /// already degrades gracefully when the bridge is down, but only after paying the client's
+    /// retry and timeout budget on every declare/resolve. Disabling it skips the call entirely.
+    /// </summary>
+    public bool Enabled { get; init; } = true;
 }

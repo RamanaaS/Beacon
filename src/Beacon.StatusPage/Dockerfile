@@ -15,6 +15,7 @@ COPY --from=build /app .
 
 # Same BeaconApi:BaseUrl override note as Beacon.Admin's Dockerfile — set via
 # BeaconApi__BaseUrl in docker-compose.yml, not baked in here.
-ENV ASPNETCORE_URLS=http://+:8080
+# $PORT is set by hosting platforms such as Render; 8080 otherwise (see Beacon.Api's Dockerfile).
+ENV PORT=8080
 EXPOSE 8080
-ENTRYPOINT ["dotnet", "Beacon.StatusPage.dll"]
+ENTRYPOINT ["sh", "-c", "ASPNETCORE_URLS=http://+:${PORT} exec dotnet Beacon.StatusPage.dll"]

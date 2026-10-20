@@ -26,8 +26,20 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
+        // SQL Server stays the default everywhere (local dev, tests, docker-compose, the Azure
+        // Bicep target). "Postgres" exists for the free public demo, which runs on a hosted
+        // PostgreSQL database because no free SQL Server host exists without a card on file.
+        // Its migrations live in their own assembly; see Beacon.Infrastructure.Postgres.csproj.
+        // Both values are read inside the lambda, not up front, so WebApplicationFactory's
+        // configuration override still applies (same reason as Program.cs's SQL health check).
         services.AddDbContext<BeaconDbContext>(options =>
-            options.UseSqlServer(configuration.GetConnectionString("BeaconDb")));
+        {
+            var connectionString = configuration.GetConnectionString("BeaconDb");
+            if (DatabaseProvider.IsPostgres(configuration))
+                options.UseNpgsql(connectionString, npgsql => npgsql.MigrationsAssembly(DatabaseProvider.PostgresMigrationsAssembly));
+            else
+                options.UseSqlServer(connectionString);
+        });
 
         services.AddScoped<IIncidentRepository, IncidentRepository>();
         services.AddSingleton<IClock, SystemClock>();
@@ -51,6 +63,12 @@ public static class DependencyInjection
     private static void AddItsmBridgeIntegration(this IServiceCollection services, IConfiguration configuration)
     {
         var itsmSettings = configuration.GetSection("ItsmBridge").Get<ItsmBridgeSettings>() ?? new ItsmBridgeSettings();
+
+        if (!itsmSettings.Enabled)
+        {
+            services.AddSingleton<IItsmBridgeClient, DisabledItsmBridgeClient>();
+            return;
+        }
 
         // Same resilience approach as AddClaudeIntegration (ARCHITECTURE.md Table B names both
         // calls explicitly), but with the defaults tightened way down. AddStandardResilienceHandler

@@ -1,0 +1,72 @@
+# Render Blueprint for Beacon's free public demo (https://render.com/docs/blueprint-spec).
+# Render -> New -> Blueprint -> pick this repo. It asks for the values marked `sync: false`.
+#
+#   Beacon.Api          -> https://ramanaas-beacon-api.onrender.com     (free web service, Docker)
+#   Beacon.StatusPage   -> https://ramanaas-beacon-status.onrender.com  (free web service, Docker)
+#   Beacon.WarRoom      -> GitHub Pages, see .github/workflows/pages.yml
+#   Database            -> Neon PostgreSQL free tier (Database__Provider=Postgres)
+#
+# Free web services sleep after ~15 minutes without traffic; the first request after that takes
+# around a minute while the container starts. If Render assigns a different URL than the ones
+# above (the name was taken), update BeaconApi__BaseUrl here and BEACON_API_URL in GitHub.
+#
+# Not deployed here: Beacon.Admin (Admin role only, and self-signup can't grant Admin on the demo),
+# itsm-bridge (the API already degrades gracefully without it), and Beacon.OnCallConsole (a
+# desktop Electron app).
+
+services:
+  - type: web
+    name: ramanaas-beacon-api
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./src/Beacon.Api/Dockerfile
+    dockerContext: .
+    healthCheckPath: /alive
+    envVars:
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
+      - key: Database__Provider
+        value: Postgres
+      # Neon -> project -> Connect -> ".NET" connection string, e.g.
+      # Host=ep-xxx.ap-southeast-1.aws.neon.tech;Database=neondb;Username=...;Password=...;SSL Mode=Require
+      - key: ConnectionStrings__BeaconDb
+        sync: false
+      - key: Database__MigrateOnStartup
+        value: "true"
+      # No Redis on the free demo: abortConnect=false lets the API start anyway, and alert
+      # dedup degrades gracefully (Phase 13). To enable it, paste an Upstash Redis string:
+      # <host>:6379,password=<token>,ssl=True,abortConnect=false
+      - key: ConnectionStrings__Redis
+        value: localhost:6379,abortConnect=false,connectTimeout=1000,connectRetry=1,syncTimeout=1000
+      # itsm-bridge isn't deployed on the demo; skip ticket sync instead of timing out each call.
+      - key: ItsmBridge__Enabled
+        value: "false"
+      - key: Jwt__SigningKey
+        generateValue: true
+      - key: Cors__AllowedOrigins__0
+        value: https://ramanaas.github.io
+      - key: Auth__SelfSignupRoles__0
+        value: Viewer
+      - key: Auth__SelfSignupRoles__1
+        value: Responder
+      - key: ForwardedHeaders__Enabled
+        value: "true"
+      - key: Swagger__Enabled
+        value: "true"
+      # Optional: an Anthropic API key turns on the AI-drafted postmortem. Leave empty to skip.
+      - key: Claude__ApiKey
+        sync: false
+
+  - type: web
+    name: ramanaas-beacon-status
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./src/Beacon.StatusPage/Dockerfile
+    dockerContext: .
+    envVars:
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
+      - key: BeaconApi__BaseUrl
+        value: https://ramanaas-beacon-api.onrender.com

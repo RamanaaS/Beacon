@@ -49,6 +49,39 @@ surfaced while being written, not a hypothetical one.
   (`az bicep install`) only if you want to compile/validate `infrastructure/main.bicep` yourself —
   not required to run anything else in this repo
 
+## Free public demo
+
+| Piece | Where | URL |
+|---|---|---|
+| War room (React) | GitHub Pages, `.github/workflows/pages.yml` | https://ramanaas.github.io/Beacon/ |
+| Beacon.Api | Render free web service (Docker), `render.yaml` | https://ramanaas-beacon-api.onrender.com/swagger |
+| Status page | Render free web service (Docker), `render.yaml` | https://ramanaas-beacon-status.onrender.com |
+| Database | Neon PostgreSQL free tier | — |
+
+Everything here is on a free tier with no card on file. The API sleeps after about 15 idle
+minutes, so the first request after that takes around a minute. Sign up in the war room with the
+Responder role to declare and resolve incidents; the demo doesn't allow self-signup as Admin.
+
+What makes it run there, all opt-in through configuration so local dev and the tests are unchanged:
+
+- `Database:Provider=Postgres` switches EF Core to Npgsql. PostgreSQL migrations live in
+  `src/Beacon.Infrastructure.Postgres`, because SQL Server and PostgreSQL histories can't share
+  one migrations assembly. `Database:MigrateOnStartup=true` applies them and seeds roles on boot.
+- `Cors:AllowedOrigins`, `ForwardedHeaders:Enabled` (real client IPs for the rate limiter behind
+  Render's proxy), `Swagger:Enabled`, `Auth:SelfSignupRoles` and `ItsmBridge:Enabled=false`.
+- The API image compiles a Linux `liblog_parser_shim.so` from the same C source, and installs
+  Liberation Sans so PDF reports work without Windows fonts.
+
+Setup, once: create a Neon project in the Singapore region and copy its .NET connection string
+(turn connection pooling off). In Render, choose New, then Blueprint, select this repo, and paste
+that string when asked. In GitHub, set Settings > Pages > Source to "GitHub Actions".
+
+To add a PostgreSQL migration after a model change:
+
+```
+dotnet ef migrations add <Name> --project src/Beacon.Infrastructure.Postgres --startup-project src/Beacon.Infrastructure.Postgres --output-dir Migrations
+```
+
 ## Deploying to Azure
 
 Written and locally compiled (`az bicep build`) but never deployed — no Azure subscription exists
